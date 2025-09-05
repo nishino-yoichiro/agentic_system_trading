@@ -1,0 +1,185 @@
+# Trading Strategy Configuration
+# Define different trading strategies and their parameters
+
+strategies:
+  momentum:
+    name: "Momentum Strategy"
+    description: "Buy assets with strong upward momentum, sell those with downward momentum"
+    enabled: true
+    weight: 0.3
+    
+    parameters:
+      lookback_period: 20  # Days to look back for momentum calculation
+      momentum_threshold: 0.05  # Minimum momentum to trigger signal
+      volume_threshold: 1.5  # Minimum volume multiplier vs average
+      rsi_oversold: 30
+      rsi_overbought: 70
+      
+    signals:
+      - name: "price_momentum"
+        weight: 0.4
+        description: "Price change over lookback period"
+      - name: "volume_momentum"
+        weight: 0.3
+        description: "Volume increase vs average"
+      - name: "rsi_divergence"
+        weight: 0.3
+        description: "RSI divergence from price"
+
+  mean_reversion:
+    name: "Mean Reversion Strategy"
+    description: "Buy oversold assets, sell overbought assets"
+    enabled: true
+    weight: 0.25
+    
+    parameters:
+      bollinger_period: 20
+      bollinger_std: 2
+      rsi_oversold: 25
+      rsi_overbought: 75
+      z_score_threshold: 2
+      
+    signals:
+      - name: "bollinger_bands"
+        weight: 0.4
+        description: "Price relative to Bollinger Bands"
+      - name: "rsi_extreme"
+        weight: 0.3
+        description: "RSI in extreme territory"
+      - name: "z_score"
+        weight: 0.3
+        description: "Price z-score vs moving average"
+
+  sentiment:
+    name: "Sentiment Strategy"
+    description: "Trade based on news and social media sentiment"
+    enabled: true
+    weight: 0.2
+    
+    parameters:
+      sentiment_threshold: 0.3
+      news_weight: 0.6
+      social_weight: 0.4
+      min_articles: 3
+      sentiment_lookback: 7  # Days
+      
+    signals:
+      - name: "news_sentiment"
+        weight: 0.6
+        description: "News article sentiment analysis"
+      - name: "social_sentiment"
+        weight: 0.4
+        description: "Reddit/Twitter sentiment analysis"
+
+  arbitrage:
+    name: "Arbitrage Strategy"
+    description: "Exploit price differences between exchanges"
+    enabled: false  # Requires multiple exchange APIs
+    weight: 0.1
+    
+    parameters:
+      min_spread: 0.01  # Minimum 1% spread
+      max_position: 0.05  # Maximum 5% of portfolio
+      execution_delay: 5  # Seconds to execute trade
+      
+    signals:
+      - name: "price_spread"
+        weight: 1.0
+        description: "Price difference between exchanges"
+
+  portfolio_optimization:
+    name: "Portfolio Optimization"
+    description: "Dynamic portfolio allocation based on risk-return optimization"
+    enabled: true
+    weight: 0.15
+    
+    parameters:
+      risk_free_rate: 0.02  # 2% annual risk-free rate
+      target_volatility: 0.15  # 15% target portfolio volatility
+      rebalance_threshold: 0.05  # 5% deviation triggers rebalance
+      max_weight: 0.2  # Maximum 20% in any single asset
+      min_weight: 0.01  # Minimum 1% in any asset
+      
+    optimization_method: "mean_variance"  # mean_variance, black_litterman, risk_parity
+    constraints:
+      - "long_only"  # No short selling
+      - "sector_limits"  # Limit exposure to any single sector
+      - "correlation_limits"  # Limit highly correlated positions
+
+# Risk Management Rules
+risk_management:
+  max_portfolio_var: 0.05  # Maximum 5% daily VaR
+  max_drawdown: 0.15  # Maximum 15% drawdown
+  position_limits:
+    single_asset: 0.1  # Maximum 10% in any single asset
+    sector: 0.3  # Maximum 30% in any sector
+    crypto: 0.5  # Maximum 50% in crypto
+    stocks: 0.7  # Maximum 70% in stocks
+  
+  stop_loss:
+    individual: 0.05  # 5% stop loss per position
+    portfolio: 0.10  # 10% portfolio stop loss
+    
+  take_profit:
+    individual: 0.20  # 20% take profit per position
+    portfolio: 0.30  # 30% portfolio take profit
+
+# Market Regime Detection
+market_regimes:
+  bull_market:
+    conditions:
+      - "fear_greed_index > 60"
+      - "vix < 20"
+      - "trending_up > 0.6"
+    allocation_adjustment:
+      crypto: 1.2
+      growth_stocks: 1.1
+      value_stocks: 0.9
+      
+  bear_market:
+    conditions:
+      - "fear_greed_index < 40"
+      - "vix > 30"
+      - "trending_down > 0.6"
+    allocation_adjustment:
+      crypto: 0.8
+      growth_stocks: 0.8
+      value_stocks: 1.1
+      bonds: 1.2
+      
+  high_volatility:
+    conditions:
+      - "vix > 25"
+      - "volatility > 0.3"
+    allocation_adjustment:
+      crypto: 0.7
+      stocks: 0.8
+      cash: 1.3
+      
+  low_volatility:
+    conditions:
+      - "vix < 15"
+      - "volatility < 0.15"
+    allocation_adjustment:
+      crypto: 1.1
+      stocks: 1.1
+      cash: 0.9
+
+# Backtesting Configuration
+backtesting:
+  start_date: "2020-01-01"
+  end_date: "2024-01-01"
+  initial_capital: 100000  # $100,000
+  transaction_costs: 0.001  # 0.1% per trade
+  slippage: 0.0005  # 0.05% slippage
+  
+  metrics:
+    - "total_return"
+    - "sharpe_ratio"
+    - "sortino_ratio"
+    - "max_drawdown"
+    - "calmar_ratio"
+    - "var_95"
+    - "cvar_95"
+    - "win_rate"
+    - "profit_factor"

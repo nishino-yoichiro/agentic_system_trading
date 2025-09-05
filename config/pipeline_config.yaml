@@ -1,0 +1,199 @@
+# Enhanced Crypto Trading Pipeline Configuration
+
+# Data Collection Settings
+data_collection:
+  hours_back: 24  # Hours of data to collect
+  max_articles: 1000  # Maximum news articles to process
+  price_lookback_days: 30  # Days of historical price data
+  
+# Asset Universe
+assets:
+  crypto:
+    - BTC
+    - ETH
+    - BNB
+    - ADA
+    - SOL
+    - DOT
+    - AVAX
+    - MATIC
+    - LINK
+    - UNI
+  
+  stocks:
+    - AAPL
+    - MSFT
+    - GOOGL
+    - AMZN
+    - TSLA
+    - NVDA
+    - META
+    - JPM
+    - BAC
+    - XOM
+
+# Feature Engineering
+feature_engineering:
+  nlp:
+    embedding_model: "all-MiniLM-L6-v2"
+    sentiment_model: "cardiffnlp/twitter-roberta-base-sentiment-latest"
+    ner_model: "en_core_web_sm"
+  
+  technical_indicators:
+    min_periods: 20
+    indicators:
+      - rsi
+      - macd
+      - bollinger_bands
+      - stochastic
+      - williams_r
+      - cci
+      - adx
+      - ichimoku
+      - atr
+      - obv
+
+# Simulation Settings
+simulation:
+  time_horizon_days: 30
+  num_simulations: 10000
+  risk_free_rate: 0.02
+  rebalance_frequency: 7  # days
+  
+# Trading Logic
+trading:
+  max_positions: 10
+  confidence_threshold: 0.6
+  risk_tolerance: "medium"  # low, medium, high
+  
+  signal_fusion:
+    technical_weight: 0.4
+    sentiment_weight: 0.3
+    simulation_weight: 0.2
+    volume_weight: 0.1
+  
+  position_sizing:
+    max_position_size: 0.1  # 10% max per position
+    stop_loss_pct: 0.05     # 5% stop loss
+    take_profit_pct: 0.15   # 15% take profit
+
+# Risk Management
+risk_management:
+  max_portfolio_var: 0.05  # 5% daily VaR
+  max_drawdown: 0.15       # 15% max drawdown
+  position_limits:
+    single_asset: 0.1      # 10% max per asset
+    sector: 0.3            # 30% max per sector
+    crypto: 0.5            # 50% max in crypto
+    stocks: 0.7            # 70% max in stocks
+
+# Reporting
+reporting:
+  generate_pdf: true
+  generate_summary: true
+  include_charts: true
+  email_reports: false
+  
+  output_formats:
+    - pdf
+    - txt
+    - json
+  
+  charts:
+    price_charts: true
+    sentiment_charts: true
+    risk_charts: true
+    performance_charts: true
+
+# Data Storage
+storage:
+  data_dir: "data"
+  reports_dir: "reports"
+  charts_dir: "charts"
+  logs_dir: "logs"
+  
+  formats:
+    raw_data: "parquet"
+    processed_data: "parquet"
+    features: "json"
+    reports: "pdf"
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file_logging: true
+  console_logging: true
+  max_file_size: "10MB"
+  backup_count: 5
+
+# Performance
+performance:
+  max_workers: 4
+  batch_size: 100
+  cache_enabled: true
+  cache_ttl: 3600  # seconds
+  
+# API Settings
+api_settings:
+  rate_limits:
+    newsapi: 1000  # requests per day
+    polygon: 5000  # requests per minute
+    binance: 1200  # requests per minute
+    coingecko: 50  # requests per minute
+  
+  timeouts:
+    default: 30  # seconds
+    news: 60
+    price: 30
+    social: 45
+
+# Backtesting
+backtesting:
+  enabled: true
+  start_date: "2020-01-01"
+  end_date: "2024-01-01"
+  initial_capital: 100000
+  transaction_costs: 0.001  # 0.1%
+  slippage: 0.0005  # 0.05%
+  
+  metrics:
+    - total_return
+    - sharpe_ratio
+    - sortino_ratio
+    - max_drawdown
+    - calmar_ratio
+    - var_95
+    - cvar_95
+    - win_rate
+    - profit_factor
+
+# Alerts and Notifications
+alerts:
+  email:
+    enabled: false
+    smtp_host: "smtp.gmail.com"
+    smtp_port: 587
+    from_email: "your_email@gmail.com"
+    to_emails: []
+  
+  webhook:
+    enabled: false
+    url: ""
+    secret: ""
+  
+  thresholds:
+    high_confidence: 0.8
+    risk_alert: 0.1
+    performance_alert: 0.05
+
+# Development and Testing
+development:
+  debug_mode: false
+  test_mode: false
+  mock_apis: false
+  save_intermediate: true
+  
+  testing:
+    unit_tests: true
+    integration_tests: true
+    performance_tests: true
