@@ -8,13 +8,12 @@ This module handles comprehensive report generation and visualization:
 - Interactive dashboards and visualizations
 """
 
-from .report_generator import ReportGenerator, DailyReport
+from .report_generator import ReportGenerator
 from .visualizations import ChartGenerator, DashboardCreator
 from .email_sender import EmailSender, AlertManager
 
 __all__ = [
     'ReportGenerator',
-    'DailyReport',
     'ChartGenerator',
     'DashboardCreator',
     'EmailSender',

@@ -9,15 +9,13 @@ This module handles advanced feature engineering for trading signals:
 - Sentiment analysis and entity extraction
 """
 
-from .nlp_processor import NLPProcessor, SentimentAnalyzer, EntityExtractor
+from .nlp_processor import NLPProcessor
 from .technical_indicators import TechnicalIndicators, IndicatorCalculator
 from .alpha_factors import AlphaFactorGenerator, FactorAnalyzer
 from .feature_store import FeatureStore, FeatureManager
 
 __all__ = [
     'NLPProcessor',
-    'SentimentAnalyzer', 
-    'EntityExtractor',
     'TechnicalIndicators',
     'IndicatorCalculator',
     'AlphaFactorGenerator',

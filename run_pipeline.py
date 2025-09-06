@@ -138,11 +138,25 @@ class EnhancedCryptoPipeline:
             logger.error(f"Error initializing pipeline: {e}")
             raise
     
-    async def collect_data(self, hours_back: int = 24) -> Dict[str, Any]:
+    async def collect_data(self, hours_back: int = 24, use_cached: bool = True) -> Dict[str, Any]:
         """Collect data from all sources"""
         logger.info(f"Collecting data for the last {hours_back} hours...")
         
         try:
+            # Check for cached data first
+            if use_cached:
+                cached_data = await self._load_cached_data()
+                if cached_data:
+                    logger.info("Using cached data to avoid API calls")
+                    self.news_data = cached_data.get('news', [])
+                    self.price_data = cached_data.get('price', {})
+                    return {
+                        'news_count': len(self.news_data),
+                        'price_symbols': len(self.price_data),
+                        'collection_time': datetime.now(),
+                        'cached': True
+                    }
+            
             # Load API keys
             api_keys = self._load_api_keys()
             
@@ -176,11 +190,7 @@ class EnhancedCryptoPipeline:
             
             self.price_data = await collect_price_data(
                 all_symbols,
-                start_date,
-                end_date,
-                polygon_key=api_keys.get('polygon'),
-                binance_key=api_keys.get('binance'),
-                coingecko_key=api_keys.get('coingecko')
+                days_back=30
             )
             
             logger.info(f"Collected price data for {len(self.price_data)} symbols")
@@ -206,10 +216,24 @@ class EnhancedCryptoPipeline:
             # Process news with NLP
             if self.news_data and self.nlp_processor:
                 logger.info("Processing news with NLP...")
-                news_results = await self.nlp_processor.process_articles(self.news_data)
+                # Convert news data to DataFrame for NLP processing
+                news_df = pd.DataFrame([{
+                    'title': article.title,
+                    'content': article.content,
+                    'published_at': article.published_at,
+                    'source': article.source
+                } for article in self.news_data])
                 
-                # Calculate sentiment metrics
-                sentiment_metrics = self.nlp_processor.calculate_sentiment_metrics(news_results)
+                news_results = await self.nlp_processor.process_news_batch(news_df)
+                
+                # Calculate sentiment metrics from the results
+                sentiment_metrics = {
+                    'total_articles': len(news_results),
+                    'avg_sentiment_score': news_results['sentiment_score'].mean(),
+                    'positive_articles': len(news_results[news_results['sentiment_score'] > 0.1]),
+                    'negative_articles': len(news_results[news_results['sentiment_score'] < -0.1]),
+                    'neutral_articles': len(news_results[(news_results['sentiment_score'] >= -0.1) & (news_results['sentiment_score'] <= 0.1)])
+                }
                 self.features['sentiment'] = sentiment_metrics
                 
                 logger.info(f"Processed {len(news_results)} articles with NLP")
@@ -273,14 +297,32 @@ class EnhancedCryptoPipeline:
                 risk_tolerance=self.config.get('risk_tolerance', 'medium')
             )
             
-            self.features['simulation'] = simulation_results
+            # Convert SimulationResult to dictionary for compatibility
+            self.features['simulation'] = {
+                'expected_return': simulation_results.expected_return,
+                'volatility': simulation_results.volatility,
+                'sharpe_ratio': simulation_results.sharpe_ratio,
+                'sortino_ratio': simulation_results.sortino_ratio,
+                'max_drawdown': simulation_results.max_drawdown,
+                'var_95': simulation_results.var_95,
+                'var_99': simulation_results.var_99,
+                'cvar_95': simulation_results.cvar_95,
+                'cvar_99': simulation_results.cvar_99,
+                'probability_of_profit': simulation_results.probability_of_profit,
+                'scenarios': simulation_results.scenarios,
+                'optimal_weights': simulation_results.optimal_weights,
+                'risk_metrics': simulation_results.risk_metrics,
+                'regime_analysis': simulation_results.regime_analysis
+            }
             logger.info("Monte Carlo simulations completed")
             
             return {
                 'simulation_completed': True,
-                'portfolio_scenarios': len(simulation_results.get('scenarios', [])),
-                'expected_return': simulation_results.get('expected_return', 0),
-                'volatility': simulation_results.get('volatility', 0)
+                'portfolio_scenarios': len(simulation_results.scenarios),
+                'expected_return': simulation_results.expected_return,
+                'volatility': simulation_results.volatility,
+                'sharpe_ratio': simulation_results.sharpe_ratio,
+                'max_drawdown': simulation_results.max_drawdown
             }
             
         except Exception as e:
@@ -299,7 +341,8 @@ class EnhancedCryptoPipeline:
             fused_signals = await self.signal_fusion.fuse_signals(
                 self.signals,
                 self.features.get('sentiment', {}),
-                self.features.get('simulation', {})
+                self.features.get('simulation', {}),
+                self.price_data
             )
             
             # Generate portfolio recommendations
@@ -351,7 +394,7 @@ class EnhancedCryptoPipeline:
             logger.error(f"Error generating report: {e}")
             raise
     
-    async def run_full_pipeline(self, hours_back: int = 24) -> Dict[str, Any]:
+    async def run_full_pipeline(self, hours_back: int = 24, use_cached: bool = True) -> Dict[str, Any]:
         """Run the complete pipeline"""
         logger.info("Starting full pipeline execution...")
         
@@ -362,7 +405,7 @@ class EnhancedCryptoPipeline:
             await self.initialize()
             
             # Collect data
-            data_results = await self.collect_data(hours_back)
+            data_results = await self.collect_data(hours_back, use_cached)
             
             # Engineer features
             feature_results = await self.engineer_features()
@@ -403,6 +446,10 @@ class EnhancedCryptoPipeline:
     
     def _load_api_keys(self) -> Dict[str, str]:
         """Load API keys from environment or config"""
+        # Load .env file from current directory
+        from dotenv import load_dotenv
+        load_dotenv('.env')
+        
         api_keys = {}
         
         # Try to load from local config file
@@ -411,11 +458,23 @@ class EnhancedCryptoPipeline:
             try:
                 with open(local_config_path, 'r') as f:
                     local_config = yaml.safe_load(f)
-                    api_keys.update(local_config)
+                    # Extract API keys from nested structure
+                    if 'newsapi' in local_config and 'api_key' in local_config['newsapi']:
+                        api_keys['newsapi'] = local_config['newsapi']['api_key']
+                    if 'polygon' in local_config and 'api_key' in local_config['polygon']:
+                        api_keys['polygon'] = local_config['polygon']['api_key']
+                    if 'binance' in local_config and 'api_key' in local_config['binance']:
+                        api_keys['binance'] = local_config['binance']['api_key']
+                    if 'coingecko' in local_config and 'api_key' in local_config['coingecko']:
+                        api_keys['coingecko'] = local_config['coingecko']['api_key']
+                    if 'alpaca' in local_config and 'api_key' in local_config['alpaca']:
+                        api_keys['alpaca_key'] = local_config['alpaca']['api_key']
+                    if 'alpaca' in local_config and 'secret_key' in local_config['alpaca']:
+                        api_keys['alpaca_secret'] = local_config['alpaca']['secret_key']
             except Exception as e:
                 logger.warning(f"Error loading local API keys: {e}")
         
-        # Load from environment variables
+        # Load from environment variables (these override YAML values)
         env_keys = {
             'newsapi': os.getenv('NEWSAPI_KEY'),
             'polygon': os.getenv('POLYGON_API_KEY'),
@@ -426,11 +485,63 @@ class EnhancedCryptoPipeline:
         }
         
         for key, value in env_keys.items():
-            if value:
+            if value and value != "your_newsapi_key_here":  # Skip placeholder values
                 api_keys[key] = value
+        
+        # Debug logging
+        logger.info(f"Loaded API keys: {list(api_keys.keys())}")
+        if 'newsapi' in api_keys:
+            logger.info(f"NewsAPI key: {api_keys['newsapi'][:10]}...")
         
         return api_keys
     
+    async def _load_cached_data(self) -> Optional[Dict[str, Any]]:
+        """Load cached data if available and recent"""
+        try:
+            news_file = self.data_dir / 'raw' / 'news.parquet'
+            if not news_file.exists():
+                return None
+            
+            # Check if data is recent (less than 24 hours old)
+            file_age = datetime.now() - datetime.fromtimestamp(news_file.stat().st_mtime)
+            if file_age.total_seconds() > 24 * 3600:  # 24 hours
+                logger.info("Cached data is too old, will fetch fresh data")
+                return None
+            
+            # Load news data
+            news_df = pd.read_parquet(news_file)
+            news_data = []
+            for _, row in news_df.iterrows():
+                from data_ingestion.news_apis import NewsArticle
+                article = NewsArticle(
+                    id=row['id'],
+                    title=row['title'],
+                    content=row['content'],
+                    url=row['url'],
+                    source=row['source'],
+                    published_at=row['published_at'],
+                    category=row['category'],
+                    sentiment_score=0.0,
+                    entities=[],
+                    symbols=[],
+                    raw_data={}
+                )
+                news_data.append(article)
+            
+            # Load price data
+            price_data = {}
+            raw_dir = self.data_dir / 'raw'
+            for price_file in raw_dir.glob('prices_*.parquet'):
+                symbol = price_file.stem.replace('prices_', '')
+                price_data[symbol] = pd.read_parquet(price_file)
+            
+            logger.info(f"Loaded cached data: {len(news_data)} news articles, {len(price_data)} price symbols")
+            return {'news': news_data, 'price': price_data}
+            
+        except Exception as e:
+            logger.warning(f"Error loading cached data: {e}")
+            return None
+
     async def _save_raw_data(self):
         """Save raw collected data"""
         try:
@@ -493,6 +604,8 @@ async def main():
                        help='Hours of data to collect')
     parser.add_argument('--output', default='reports',
                        help='Output directory for reports')
+    parser.add_argument('--force-fresh', action='store_true',
+                       help='Force fresh data collection, ignore cached data')
     
     args = parser.parse_args()
     
@@ -509,7 +622,7 @@ async def main():
     
     try:
         if args.mode == 'full':
-            results = await pipeline.run_full_pipeline(args.hours_back)
+            results = await pipeline.run_full_pipeline(args.hours_back, use_cached=not args.force_fresh)
             print(f"\n{'='*60}")
             print("PIPELINE EXECUTION SUMMARY")
             print(f"{'='*60}")
