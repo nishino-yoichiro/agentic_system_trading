@@ -44,11 +44,12 @@ This isn't just another trading bot. It's a comprehensive system that:
 # Navigate to the pipeline directory
 cd enhanced_crypto_pipeline
 
-# Run Windows-specific setup (avoids TA-Lib issues)
-python setup_windows.py
+# Install dependencies
+pip install -r requirements.txt
 
-# Test the installation
-python test_ta_library.py
+# Install additional dependencies
+python -m spacy download en_core_web_sm
+python -c "import nltk; nltk.download('vader_lexicon'); nltk.download('punkt')"
 ```
 
 #### **For Linux/Mac Users**
@@ -91,17 +92,17 @@ nano config/strategies.yaml
 ### 3. **Run the Pipeline**
 
 ```bash
-# Run complete pipeline
-python run_pipeline.py --mode full
+# Run complete pipeline (data collection + analysis + reports)
+python run_enhanced_pipeline.py
 
-# Run only data collection
-python run_pipeline.py --mode data --hours-back 48
+# Setup historical data first, then run pipeline
+python run_enhanced_pipeline.py --setup-historical --days-back 365
 
-# Run only analysis on existing data
-python run_pipeline.py --mode analysis
+# Start continuous data collection (background updates)
+python run_enhanced_pipeline.py --continuous --interval 20
 
-# Generate recommendations only
-python run_pipeline.py --mode recommendations
+# Run with custom historical data range
+python run_enhanced_pipeline.py --setup-historical --days-back 180
 ```
 
 ## 📊 **Key Features**

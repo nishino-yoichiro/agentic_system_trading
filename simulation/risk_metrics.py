@@ -188,3 +188,4 @@ class RiskCalculator:
         except Exception as e:
             logger.error(f"Error calculating portfolio risk: {e}")
             return {'volatility': 0, 'var_95': 0, 'sharpe_ratio': 0}
+

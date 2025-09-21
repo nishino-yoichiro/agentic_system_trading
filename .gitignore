@@ -1,2 +1,6 @@
 .env
 enh_venv/
+config/
+data/
+logs/
+reports/

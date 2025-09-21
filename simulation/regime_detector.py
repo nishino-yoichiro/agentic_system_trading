@@ -230,3 +230,4 @@ class RegimeDetector:
             transitions[transition_key] = transitions.get(transition_key, 0) + 1
         
         return transitions
+

@@ -165,3 +165,4 @@ class DashboardCreator:
         except Exception as e:
             logger.error(f"Error creating market dashboard: {e}")
             return None
+

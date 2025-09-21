@@ -35,6 +35,11 @@ coingecko:
   api_key: "your_coingecko_key_here"  # Optional, has free tier
   base_url: "https://api.coingecko.com/api/v3"
 
+coinbase:
+  api_key: "your_coinbase_api_key_here"
+  api_secret: "your_coinbase_api_secret_here"
+  base_url: "https://api.coinbase.com"
+
 # Social Media APIs
 reddit:
   client_id: "your_reddit_client_id"
@@ -65,3 +70,4 @@ smtp:
   password: "your_app_password"
   from_email: "your_email@gmail.com"
   to_emails: ["recipient1@email.com", "recipient2@email.com"]
+

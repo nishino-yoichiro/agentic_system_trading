@@ -174,3 +174,4 @@ trading_params:
   rebalance_frequency: 7  # Days between rebalancing
   min_confidence: 0.6     # Minimum confidence for trades
   max_correlation: 0.7    # Maximum correlation between positions
+

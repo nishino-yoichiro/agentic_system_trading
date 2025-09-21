@@ -147,8 +147,8 @@ class ReportGenerator:
         
         # Summary statistics
         total_recommendations = len(recommendations)
-        buy_signals = len([r for r in recommendations if r.get('action') == 'buy'])
-        sell_signals = len([r for r in recommendations if r.get('action') == 'sell'])
+        buy_signals = len([r for r in recommendations if (r.get('action') == 'buy' if hasattr(r, 'get') else (r.weight > 0 if hasattr(r, 'weight') else False))])
+        sell_signals = len([r for r in recommendations if (r.get('action') == 'sell' if hasattr(r, 'get') else (r.weight < 0 if hasattr(r, 'weight') else False))])
         
         avg_sentiment = sentiment.get('average_sentiment', 0)
         sentiment_label = "Positive" if avg_sentiment > 0.1 else "Negative" if avg_sentiment < -0.1 else "Neutral"
@@ -220,10 +220,19 @@ class ReportGenerator:
         table_data = [['Symbol', 'Action', 'Confidence', 'Reasoning']]
         
         for rec in recommendations[:10]:  # Show top 10
-            symbol = rec.get('symbol', 'N/A')
-            action = rec.get('action', 'N/A')
-            confidence = rec.get('confidence', 0)
-            reasoning = rec.get('reasoning', 'N/A')[:50] + '...' if len(rec.get('reasoning', '')) > 50 else rec.get('reasoning', 'N/A')
+            # Handle both PortfolioAllocation objects and dictionaries
+            if hasattr(rec, 'symbol'):
+                # PortfolioAllocation object
+                symbol = rec.symbol
+                action = 'buy' if rec.weight > 0 else 'sell'
+                confidence = rec.weight  # Use weight as confidence proxy
+                reasoning = rec.allocation_reason[:50] + '...' if len(rec.allocation_reason) > 50 else rec.allocation_reason
+            else:
+                # Dictionary format
+                symbol = rec.get('symbol', 'N/A')
+                action = rec.get('action', 'N/A')
+                confidence = rec.get('confidence', 0)
+                reasoning = rec.get('reasoning', 'N/A')[:50] + '...' if len(rec.get('reasoning', '')) > 50 else rec.get('reasoning', 'N/A')
             
             table_data.append([
                 symbol,
@@ -371,14 +380,24 @@ MARKET SENTIMENT:
 
 TRADING RECOMMENDATIONS:
 - Total Recommendations: {len(recommendations)}
-- Buy Signals: {len([r for r in recommendations if r.get('action') == 'buy'])}
-- Sell Signals: {len([r for r in recommendations if r.get('action') == 'sell'])}
+- Buy Signals: {len([r for r in recommendations if (r.get('action') == 'buy' if hasattr(r, 'get') else (r.weight > 0 if hasattr(r, 'weight') else False))])}
+- Sell Signals: {len([r for r in recommendations if (r.get('action') == 'sell' if hasattr(r, 'get') else (r.weight < 0 if hasattr(r, 'weight') else False))])}
 
 TOP RECOMMENDATIONS:
 """
             
             for i, rec in enumerate(recommendations[:5], 1):
-                summary_content += f"{i}. {rec.get('symbol', 'N/A')} - {rec.get('action', 'N/A').upper()} (Confidence: {rec.get('confidence', 0):.2f})\n"
+                if hasattr(rec, 'symbol'):
+                    # PortfolioAllocation object
+                    symbol = rec.symbol
+                    action = 'buy' if rec.weight > 0 else 'sell'
+                    confidence = rec.weight
+                else:
+                    # Dictionary format
+                    symbol = rec.get('symbol', 'N/A')
+                    action = rec.get('action', 'N/A')
+                    confidence = rec.get('confidence', 0)
+                summary_content += f"{i}. {symbol} - {action.upper()} (Confidence: {confidence:.2f})\n"
             
             summary_content += f"""
 RISK ANALYSIS:
@@ -448,3 +467,4 @@ if __name__ == "__main__":
         print(f"Summary report: {summary_report}")
     
     asyncio.run(main())
+

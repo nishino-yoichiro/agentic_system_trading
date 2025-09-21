@@ -470,3 +470,4 @@ if __name__ == "__main__":
         print(f"VaR 95%: {result.var_95:.2%}")
     
     asyncio.run(main())
+

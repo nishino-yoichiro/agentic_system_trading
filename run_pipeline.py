@@ -77,6 +77,9 @@ class EnhancedCryptoPipeline:
         self.signals = {}
         self.recommendations = []
         
+        # Load API keys
+        self.api_keys = self._load_api_keys()
+        
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from YAML file"""
         try:
@@ -186,11 +189,12 @@ class EnhancedCryptoPipeline:
                           self.config['assets']['stocks'])
             
             end_date = datetime.now()
-            start_date = end_date - timedelta(days=30)  # Get 30 days of historical data
+            start_date = end_date - timedelta(days=90)  # Get 90 days of historical data for better correlations
             
             self.price_data = await collect_price_data(
                 all_symbols,
-                days_back=30
+                days_back=90,
+                api_keys=self.api_keys
             )
             
             logger.info(f"Collected price data for {len(self.price_data)} symbols")
@@ -350,7 +354,7 @@ class EnhancedCryptoPipeline:
                 fused_signals,
                 self.price_data,
                 max_positions=self.config.get('max_positions', 10),
-                confidence_threshold=self.config.get('confidence_threshold', 0.6)
+                confidence_threshold=self.config.get('trading', {}).get('confidence_threshold', 0.6)
             )
             
             self.recommendations = portfolio_recs
@@ -458,19 +462,31 @@ class EnhancedCryptoPipeline:
             try:
                 with open(local_config_path, 'r') as f:
                     local_config = yaml.safe_load(f)
-                    # Extract API keys from nested structure
+                    # Extract API keys from nested structure (skip placeholder values)
                     if 'newsapi' in local_config and 'api_key' in local_config['newsapi']:
-                        api_keys['newsapi'] = local_config['newsapi']['api_key']
+                        key = local_config['newsapi']['api_key']
+                        if key and not key.startswith("your_") and key != "api_key":
+                            api_keys['newsapi'] = key
                     if 'polygon' in local_config and 'api_key' in local_config['polygon']:
-                        api_keys['polygon'] = local_config['polygon']['api_key']
+                        key = local_config['polygon']['api_key']
+                        if key and not key.startswith("your_") and key != "api_key":
+                            api_keys['polygon'] = key
                     if 'binance' in local_config and 'api_key' in local_config['binance']:
-                        api_keys['binance'] = local_config['binance']['api_key']
+                        key = local_config['binance']['api_key']
+                        if key and not key.startswith("your_") and key != "api_key":
+                            api_keys['binance'] = key
                     if 'coingecko' in local_config and 'api_key' in local_config['coingecko']:
-                        api_keys['coingecko'] = local_config['coingecko']['api_key']
+                        key = local_config['coingecko']['api_key']
+                        if key and not key.startswith("your_") and key != "api_key":
+                            api_keys['coingecko'] = key
                     if 'alpaca' in local_config and 'api_key' in local_config['alpaca']:
-                        api_keys['alpaca_key'] = local_config['alpaca']['api_key']
+                        key = local_config['alpaca']['api_key']
+                        if key and not key.startswith("your_") and key != "api_key":
+                            api_keys['alpaca_key'] = key
                     if 'alpaca' in local_config and 'secret_key' in local_config['alpaca']:
-                        api_keys['alpaca_secret'] = local_config['alpaca']['secret_key']
+                        key = local_config['alpaca']['secret_key']
+                        if key and not key.startswith("your_") and key != "api_key":
+                            api_keys['alpaca_secret'] = key
             except Exception as e:
                 logger.warning(f"Error loading local API keys: {e}")
         
@@ -485,7 +501,7 @@ class EnhancedCryptoPipeline:
         }
         
         for key, value in env_keys.items():
-            if value and value != "your_newsapi_key_here":  # Skip placeholder values
+            if value and not value.startswith("your_") and value != "api_key":  # Skip placeholder values
                 api_keys[key] = value
         
         # Debug logging

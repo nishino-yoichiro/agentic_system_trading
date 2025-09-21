@@ -4,14 +4,15 @@
 data_collection:
   hours_back: 24  # Hours of data to collect
   max_articles: 1000  # Maximum news articles to process
-  price_lookback_days: 30  # Days of historical price data
+  price_lookback_days: 7  # Days of historical price data (reduced for efficiency)
+  crypto_granularity: 60  # 60 seconds = 1 minute candles
+  crypto_data_source: "coinbase_advanced"  # Use Coinbase Advanced API
   
 # Asset Universe
 assets:
   crypto:
     - BTC
     - ETH
-    - BNB
     - ADA
     - SOL
     - DOT
@@ -40,6 +41,7 @@ feature_engineering:
     ner_model: "en_core_web_sm"
   
   technical_indicators:
+    enabled: true  # Set to false to skip technical analysis for faster runs
     min_periods: 20
     indicators:
       - rsi
@@ -63,7 +65,7 @@ simulation:
 # Trading Logic
 trading:
   max_positions: 10
-  confidence_threshold: 0.6
+  confidence_threshold: 0.3
   risk_tolerance: "medium"  # low, medium, high
   
   signal_fusion:
@@ -197,3 +199,4 @@ development:
     unit_tests: true
     integration_tests: true
     performance_tests: true
+

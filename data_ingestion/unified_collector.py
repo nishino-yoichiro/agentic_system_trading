@@ -74,3 +74,4 @@ class UnifiedDataCollector:
         """Collect social media data"""
         # Placeholder implementation
         return pd.DataFrame()
+

@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 from typing import List, Dict, Optional, Tuple, Any
 from dataclasses import dataclass
+from pathlib import Path
 import ta
 from loguru import logger
 import warnings
@@ -94,16 +95,85 @@ class TechnicalIndicators:
 
 
 class IndicatorCalculator:
-    """Calculate technical indicators from OHLCV data using ta library"""
+    """Calculate technical indicators from OHLCV data using ta library with caching"""
     
-    def __init__(self):
+    def __init__(self, cache_dir: str = "data/cache"):
         self.min_periods = 20  # Minimum periods for reliable indicators
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(exist_ok=True)
+        self.cache_ttl_hours = 6  # Cache indicators for 6 hours
         
-    def calculate_all_indicators(self, df: pd.DataFrame) -> TechnicalIndicators:
-        """Calculate all technical indicators using ta library"""
+    def _get_cache_key(self, symbol: str, data_hash: str) -> str:
+        """Generate cache key for indicators"""
+        return f"{symbol}_indicators_{data_hash}.json"
+    
+    def _check_cached_indicators(self, symbol: str, data_hash: str) -> Optional[TechnicalIndicators]:
+        """Check if indicators are cached and fresh"""
+        try:
+            cache_file = self.cache_dir / self._get_cache_key(symbol, data_hash)
+            if not cache_file.exists():
+                return None
+            
+            # Check file age
+            import time
+            file_age = time.time() - cache_file.stat().st_mtime
+            if file_age > self.cache_ttl_hours * 3600:
+                logger.debug(f"Cache expired for {symbol} indicators ({file_age/3600:.1f} hours old)")
+                return None
+            
+            # Load cached indicators
+            import json
+            with open(cache_file, 'r') as f:
+                cached_data = json.load(f)
+            
+            # Convert back to TechnicalIndicators object
+            return TechnicalIndicators(**cached_data)
+            
+        except Exception as e:
+            logger.debug(f"Error checking cache for {symbol}: {e}")
+            return None
+    
+    def _cache_indicators(self, symbol: str, data_hash: str, indicators: TechnicalIndicators):
+        """Cache calculated indicators"""
+        try:
+            cache_file = self.cache_dir / self._get_cache_key(symbol, data_hash)
+            import json
+            with open(cache_file, 'w') as f:
+                json.dump(indicators.__dict__, f, indent=2)
+            logger.debug(f"Cached indicators for {symbol}")
+        except Exception as e:
+            logger.debug(f"Error caching indicators for {symbol}: {e}")
+    
+    def _get_data_hash(self, df: pd.DataFrame) -> str:
+        """Generate hash for data to detect changes"""
+        import hashlib
+        # Use a more stable hash based on data characteristics rather than exact values
+        if len(df) == 0:
+            return "empty"
+        
+        # Use shape, date range, and basic statistics for stability
+        shape_data = f"{df.shape}".encode()
+        date_range = f"{df.index.min()}_{df.index.max()}".encode() if hasattr(df.index, 'min') else b""
+        price_stats = f"{df['close'].mean():.2f}_{df['close'].std():.2f}".encode() if 'close' in df.columns else b""
+        
+        return hashlib.md5(shape_data + date_range + price_stats).hexdigest()[:8]
+        
+    def calculate_all_indicators(self, df: pd.DataFrame, symbol: str = None) -> TechnicalIndicators:
+        """Calculate all technical indicators using ta library with caching"""
         if len(df) < self.min_periods:
             logger.warning(f"Insufficient data: {len(df)} periods (minimum: {self.min_periods})")
             return self._create_empty_indicators()
+        
+        # Check cache if symbol provided
+        if symbol:
+            data_hash = self._get_data_hash(df)
+            logger.debug(f"Data hash for {symbol}: {data_hash}")
+            cached_indicators = self._check_cached_indicators(symbol, data_hash)
+            if cached_indicators is not None:
+                logger.info(f"[CACHED] Using cached indicators for {symbol}")
+                return cached_indicators
+            else:
+                logger.debug(f"No cached indicators found for {symbol} with hash {data_hash}")
         
         try:
             # Ensure we have the required columns
@@ -131,7 +201,7 @@ class IndicatorCalculator:
                 stochastic_k=self._safe_calculate(lambda: ta.momentum.stoch(df['high'], df['low'], df['close']).iloc[-1]),
                 stochastic_d=self._safe_calculate(lambda: ta.momentum.stoch_signal(df['high'], df['low'], df['close']).iloc[-1]),
                 williams_r=self._safe_calculate(lambda: ta.momentum.williams_r(df['high'], df['low'], df['close']).iloc[-1]),
-                cci=self._safe_calculate(lambda: ta.momentum.cci(df['high'], df['low'], df['close']).iloc[-1]),
+                cci=self._safe_calculate(lambda: ta.trend.cci(df['high'], df['low'], df['close']).iloc[-1]),
                 roc=self._safe_calculate(lambda: ta.momentum.roc(df['close'], window=10).iloc[-1]),
                 
                 # Bollinger Bands
@@ -148,7 +218,7 @@ class IndicatorCalculator:
                 keltner_lower=self._calculate_keltner_lower(df),
                 
                 # Volume indicators
-                volume_sma=self._safe_calculate(lambda: ta.volume.volume_sma(df['close'], df['volume']).iloc[-1]),
+                volume_sma=self._calculate_volume_sma(df),
                 volume_ratio=self._calculate_volume_ratio(df),
                 obv=self._safe_calculate(lambda: ta.volume.on_balance_volume(df['close'], df['volume']).iloc[-1]),
                 ad_line=self._safe_calculate(lambda: ta.volume.acc_dist_index(df['high'], df['low'], df['close'], df['volume']).iloc[-1]),
@@ -184,6 +254,10 @@ class IndicatorCalculator:
                 trend_strength=self._calculate_trend_strength(df),
                 market_regime=self._determine_market_regime(df)
             )
+            
+            # Cache the calculated indicators if symbol provided
+            if symbol:
+                self._cache_indicators(symbol, data_hash, indicators)
             
             return indicators
             
@@ -258,6 +332,15 @@ class IndicatorCalculator:
             return float(current_volume / avg_volume) if avg_volume > 0 else 1.0
         except:
             return 1.0
+    
+    def _calculate_volume_sma(self, df: pd.DataFrame) -> float:
+        """Calculate Volume Simple Moving Average"""
+        try:
+            if len(df) < 20:
+                return float(df['volume'].mean()) if len(df) > 0 else 0.0
+            return float(df['volume'].tail(20).mean())
+        except:
+            return 0.0
     
     def _calculate_vwap(self, df: pd.DataFrame) -> float:
         """Calculate Volume Weighted Average Price"""
@@ -729,3 +812,4 @@ if __name__ == "__main__":
     signals = signal_generator.generate_signals(df)
     
     print(f"\nOverall Signal: {signals['overall_signal']}")
+

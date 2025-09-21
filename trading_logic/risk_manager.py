@@ -178,3 +178,4 @@ class RiskManager:
                 'take_profit': 0,
                 'risk_amount': 0
             }
+

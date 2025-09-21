@@ -186,7 +186,7 @@ class BinanceClient:
 class CoinGeckoClient:
     """CoinGecko API client for cryptocurrency data"""
     
-    def __init__(self, api_key: str = None, base_url: str = "https://api.coingecko.com/api/v3"):
+    def __init__(self, api_key: str = None, base_url: str = "https://api.coingecko.com"):
         self.api_key = api_key
         self.base_url = base_url
         self.session = None
@@ -202,6 +202,9 @@ class CoinGeckoClient:
     async def get_crypto_prices(self, coin_id: str, days: int = 30) -> List[PriceData]:
         """Get cryptocurrency price data from CoinGecko"""
         try:
+            # Add delay to avoid rate limiting
+            await asyncio.sleep(0.5)
+            
             params = {
                 'vs_currency': 'usd',
                 'days': days,
@@ -211,7 +214,7 @@ class CoinGeckoClient:
             if self.api_key:
                 params['x_cg_demo_api_key'] = self.api_key
             
-            response = self.session.get(f"{self.base_url}/coins/{coin_id}/market_chart", params=params)
+            response = self.session.get(f"{self.base_url}/api/v3/coins/{coin_id}/market_chart", params=params)
             response.raise_for_status()
             data = response.json()
             
@@ -237,6 +240,87 @@ class CoinGeckoClient:
         except Exception as e:
             logger.error(f"Error fetching crypto prices for {coin_id}: {e}")
             return []
+
+
+class YahooFinanceClient:
+    """Yahoo Finance client for stocks and crypto (free, no API key needed)"""
+    
+    def __init__(self):
+        self.base_url = "https://query1.finance.yahoo.com"
+        self.session = None
+        
+    async def __aenter__(self):
+        self.session = requests.Session()
+        return self
+        
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.session:
+            self.session.close()
+    
+    async def get_prices(self, symbol: str, start_date: datetime, end_date: datetime) -> List[PriceData]:
+        """Get price data from Yahoo Finance"""
+        try:
+            # Add delay to avoid rate limiting
+            await asyncio.sleep(1)
+            
+            # Convert dates to timestamps
+            start_ts = int(start_date.timestamp())
+            end_ts = int(end_date.timestamp())
+            
+            # Map crypto symbols to Yahoo Finance format
+            yahoo_symbol = self._map_to_yahoo_symbol(symbol)
+            
+            url = f"{self.base_url}/v8/finance/chart/{yahoo_symbol}"
+            params = {
+                'period1': start_ts,
+                'period2': end_ts,
+                'interval': '1d',
+                'includePrePost': 'false',
+                'events': 'div,split'
+            }
+            
+            response = self.session.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            
+            if 'chart' not in data or not data['chart']['result']:
+                logger.warning(f"No data found for {symbol}")
+                return []
+            
+            result = data['chart']['result'][0]
+            timestamps = result['timestamp']
+            quotes = result['indicators']['quote'][0]
+            
+            prices = []
+            for i, timestamp in enumerate(timestamps):
+                if i < len(quotes['open']) and quotes['open'][i] is not None:
+                    price_data = PriceData(
+                        symbol=symbol,
+                        timestamp=datetime.fromtimestamp(timestamp),
+                        open=quotes['open'][i],
+                        high=quotes['high'][i],
+                        low=quotes['low'][i],
+                        close=quotes['close'][i],
+                        volume=quotes['volume'][i] if quotes['volume'][i] else 0,
+                        source='yahoo_finance',
+                        raw_data={'timestamp': timestamp, 'quote': quotes}
+                    )
+                    prices.append(price_data)
+            
+            logger.info(f"Fetched {len(prices)} prices for {symbol} from Yahoo Finance")
+            return prices
+            
+        except Exception as e:
+            logger.error(f"Error fetching prices for {symbol} from Yahoo Finance: {e}")
+            return []
+    
+    def _map_to_yahoo_symbol(self, symbol: str) -> str:
+        """Map symbols to Yahoo Finance format"""
+        # For crypto, add -USD suffix
+        crypto_symbols = ['BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'DOT', 'AVAX', 'MATIC', 'LINK', 'UNI']
+        if symbol in crypto_symbols:
+            return f"{symbol}-USD"
+        return symbol
 
 
 class AlpacaClient:
@@ -314,41 +398,229 @@ async def collect_crypto_prices(symbols: List[str], days_back: int = 30) -> List
     """Collect crypto prices (placeholder)"""
     return []
 
-async def collect_stock_prices(symbols: List[str], days_back: int = 30) -> List[Dict]:
-    """Collect stock prices (placeholder)"""
-    return []
+async def collect_stock_prices(symbols: List[str], days_back: int = 30) -> Dict[str, pd.DataFrame]:
+    """Collect stock prices using Yahoo Finance"""
+    import yfinance as yf
+    from datetime import datetime, timedelta
+    
+    logger.info(f"Collecting stock prices for {len(symbols)} symbols using Yahoo Finance")
+    
+    results = {}
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=days_back)
+    
+    for symbol in symbols:
+        try:
+            logger.info(f"Fetching {symbol} data from Yahoo Finance...")
+            ticker = yf.Ticker(symbol)
+            df = ticker.history(start=start_date, end=end_date, interval='1m')
+            
+            if not df.empty:
+                # Rename columns to match expected format
+                df.columns = [col.lower() for col in df.columns]
+                df.index.name = 'timestamp'
+                results[symbol] = df
+                logger.info(f"Collected {len(df)} data points for {symbol}")
+            else:
+                logger.warning(f"No data returned for {symbol}")
+                
+        except Exception as e:
+            logger.error(f"Error collecting data for {symbol}: {e}")
+            continue
+    
+    logger.info(f"Successfully collected stock data for {len(results)} symbols")
+    return results
 
-async def collect_price_data(symbols: List[str], days_back: int = 30) -> Dict[str, Any]:
-    """Collect price data for symbols (mock implementation)"""
+async def collect_price_data(symbols: List[str], days_back: int = 30, api_keys: Dict[str, str] = None) -> Dict[str, Any]:
+    """Collect price data for symbols using real APIs"""
+    import pandas as pd
+    from datetime import datetime, timedelta
+    import yaml
+    import os
+    
+    # Load API keys if not provided
+    if api_keys is None:
+        api_keys_path = 'config/api_keys.yaml'
+        if not os.path.exists(api_keys_path):
+            api_keys_path = 'config/api_keys_local.yaml'
+        
+        try:
+            with open(api_keys_path, 'r') as f:
+                api_keys = yaml.safe_load(f)
+        except:
+            logger.warning("No API keys found, using mock data")
+            return await _generate_mock_data(symbols, days_back)
+    
+    price_data = {}
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=days_back)
+    
+    # Separate crypto and stock symbols
+    crypto_symbols = [s for s in symbols if s in ['BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'DOT', 'AVAX', 'MATIC', 'LINK', 'UNI']]
+    stock_symbols = [s for s in symbols if s in ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META', 'JPM', 'BAC', 'XOM']]
+    
+    # Collect crypto data using CoinGecko (free, no API key needed)
+    if crypto_symbols:
+        # Extract CoinGecko API key if available
+        coingecko_key = None
+        if isinstance(api_keys.get('coingecko'), dict):
+            coingecko_key = api_keys['coingecko'].get('api_key')
+        elif isinstance(api_keys.get('coingecko'), str):
+            coingecko_key = api_keys['coingecko']
+        
+        try:
+            async with CoinGeckoClient(coingecko_key) as client:
+                for symbol in crypto_symbols:
+                    # Map symbols to CoinGecko coin IDs
+                    coin_id = _get_coin_id(symbol)
+                    if coin_id:
+                        prices = await client.get_crypto_prices(coin_id, days_back)
+                        if prices:
+                            df = _convert_prices_to_dataframe(prices)
+                            price_data[symbol] = df
+                            logger.info(f"Collected {len(df)} crypto prices for {symbol} from CoinGecko")
+                        else:
+                            logger.warning(f"No crypto data for {symbol}, using mock data")
+                            price_data[symbol] = _generate_mock_symbol_data(symbol, days_back)
+                    else:
+                        logger.warning(f"Unknown crypto symbol {symbol}, using mock data")
+                        price_data[symbol] = _generate_mock_symbol_data(symbol, days_back)
+        except Exception as e:
+            logger.error(f"Error collecting crypto data from CoinGecko: {e}, using mock data")
+            for symbol in crypto_symbols:
+                price_data[symbol] = _generate_mock_symbol_data(symbol, days_back)
+    
+    # Collect stock data - try Polygon first, then Yahoo Finance
+    if stock_symbols:
+        # Extract polygon API key from nested structure or flat structure
+        polygon_key = None
+        if isinstance(api_keys.get('polygon'), dict):
+            polygon_key = api_keys['polygon'].get('api_key')
+        elif isinstance(api_keys.get('polygon'), str):
+            polygon_key = api_keys['polygon']
+        
+        if polygon_key and not polygon_key.startswith("your_") and polygon_key != "api_key":
+            try:
+                async with PolygonClient(polygon_key) as client:
+                    for symbol in stock_symbols:
+                        prices = await client.get_stock_prices(symbol, start_date, end_date)
+                        if prices:
+                            df = _convert_prices_to_dataframe(prices)
+                            price_data[symbol] = df
+                            logger.info(f"Collected {len(df)} stock prices for {symbol} from Polygon")
+                        else:
+                            logger.warning(f"No stock data for {symbol} from Polygon, trying Yahoo Finance")
+                            # Try Yahoo Finance as fallback
+                            await _try_yahoo_finance(symbol, start_date, end_date, price_data)
+            except Exception as e:
+                logger.error(f"Error collecting stock data from Polygon: {e}, trying Yahoo Finance")
+                # Try Yahoo Finance for all stocks
+                for symbol in stock_symbols:
+                    await _try_yahoo_finance(symbol, start_date, end_date, price_data)
+        else:
+            logger.info("No Polygon API key, using Yahoo Finance for stocks")
+            # Use Yahoo Finance for all stocks
+            for symbol in stock_symbols:
+                await _try_yahoo_finance(symbol, start_date, end_date, price_data)
+    
+    # If no API keys or all failed, use mock data
+    if not price_data:
+        logger.warning("No real data collected, using mock data")
+        return await _generate_mock_data(symbols, days_back)
+    
+    return price_data
+
+
+def _convert_prices_to_dataframe(prices: List[PriceData]) -> pd.DataFrame:
+    """Convert PriceData list to DataFrame"""
+    data = []
+    for price in prices:
+        data.append({
+            'date': price.timestamp,
+            'open': price.open,
+            'high': price.high,
+            'low': price.low,
+            'close': price.close,
+            'volume': price.volume
+        })
+    
+    df = pd.DataFrame(data)
+    df = df.sort_values('date').reset_index(drop=True)
+    return df
+
+
+async def _generate_mock_data(symbols: List[str], days_back: int) -> Dict[str, Any]:
+    """Generate mock data as fallback"""
     import pandas as pd
     import numpy as np
     from datetime import datetime, timedelta
     
-    # Generate mock price data for testing
     price_data = {}
     
     for symbol in symbols:
-        # Generate 30 days of mock OHLCV data
-        dates = pd.date_range(end=datetime.now(), periods=days_back, freq='D')
-        
-        # Generate random walk price data
-        base_price = 100 if 'BTC' in symbol else 50
-        returns = np.random.normal(0, 0.02, days_back)  # 2% daily volatility
-        prices = [base_price]
-        
-        for ret in returns[1:]:
-            prices.append(prices[-1] * (1 + ret))
-        
-        # Create OHLCV data
-        df = pd.DataFrame({
-            'date': dates,
-            'open': prices,
-            'high': [p * (1 + abs(np.random.normal(0, 0.01))) for p in prices],
-            'low': [p * (1 - abs(np.random.normal(0, 0.01))) for p in prices],
-            'close': prices,
-            'volume': np.random.randint(1000000, 10000000, days_back)
-        })
-        
-        price_data[symbol] = df
+        price_data[symbol] = _generate_mock_symbol_data(symbol, days_back)
     
     return price_data
+
+
+async def _try_yahoo_finance(symbol: str, start_date: datetime, end_date: datetime, price_data: dict):
+    """Try to get data from Yahoo Finance"""
+    try:
+        async with YahooFinanceClient() as client:
+            prices = await client.get_prices(symbol, start_date, end_date)
+            if prices:
+                df = _convert_prices_to_dataframe(prices)
+                price_data[symbol] = df
+                logger.info(f"Collected {len(df)} prices for {symbol} from Yahoo Finance")
+            else:
+                logger.warning(f"No data for {symbol} from Yahoo Finance, using mock data")
+                price_data[symbol] = _generate_mock_symbol_data(symbol, (end_date - start_date).days)
+    except Exception as e:
+        logger.error(f"Error getting {symbol} from Yahoo Finance: {e}, using mock data")
+        price_data[symbol] = _generate_mock_symbol_data(symbol, (end_date - start_date).days)
+
+
+def _get_coin_id(symbol: str) -> str:
+    """Map crypto symbols to CoinGecko coin IDs"""
+    coin_mapping = {
+        'BTC': 'bitcoin',
+        'ETH': 'ethereum',
+        'BNB': 'binancecoin',
+        'ADA': 'cardano',
+        'SOL': 'solana',
+        'DOT': 'polkadot',
+        'AVAX': 'avalanche-2',
+        'MATIC': 'matic-network',
+        'LINK': 'chainlink',
+        'UNI': 'uniswap'
+    }
+    return coin_mapping.get(symbol, None)
+
+
+def _generate_mock_symbol_data(symbol: str, days_back: int) -> pd.DataFrame:
+    """Generate mock data for a single symbol"""
+    import pandas as pd
+    import numpy as np
+    from datetime import datetime, timedelta
+    
+    dates = pd.date_range(end=datetime.now(), periods=days_back, freq='D')
+    
+    # Generate random walk price data
+    base_price = 100 if 'BTC' in symbol else 50
+    returns = np.random.normal(0, 0.02, days_back)  # 2% daily volatility
+    prices = [base_price]
+    
+    for ret in returns[1:]:
+        prices.append(prices[-1] * (1 + ret))
+    
+    # Create OHLCV data
+    df = pd.DataFrame({
+        'date': dates,
+        'open': prices,
+        'high': [p * (1 + abs(np.random.normal(0, 0.01))) for p in prices],
+        'low': [p * (1 - abs(np.random.normal(0, 0.01))) for p in prices],
+        'close': prices,
+        'volume': np.random.randint(1000000, 10000000, days_back)
+    })
+    
+    return df

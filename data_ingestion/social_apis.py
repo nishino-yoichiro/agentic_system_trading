@@ -360,3 +360,4 @@ async def collect_stock_social_sentiment(api_keys_path: str = 'config/api_keys.y
     await collector.initialize()
     posts = await collector.collect_stock_sentiment(hours_back)
     return collector.posts_to_dataframe(posts).to_dict('records')
+

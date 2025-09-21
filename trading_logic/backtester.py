@@ -246,3 +246,4 @@ class Backtester:
             
         except Exception as e:
             logger.error(f"Error plotting backtest results: {e}")
+

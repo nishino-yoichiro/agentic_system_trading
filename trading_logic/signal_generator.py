@@ -159,14 +159,14 @@ class SignalGenerator:
         logger.info(f"Generated {len(fused_signals)} fused signals")
         return fused_signals
     
-    def _create_technical_signal(self, symbol: str, tech_data: Dict) -> Optional[TradingSignal]:
+    def _create_technical_signal(self, symbol: str, tech_data) -> Optional[TradingSignal]:
         """Create signal from technical analysis"""
         try:
-            # Extract technical indicators
-            rsi = tech_data.get('rsi', 50)
-            macd = tech_data.get('macd', 0)
-            macd_signal = tech_data.get('macd_signal', 0)
-            bollinger_position = tech_data.get('bollinger_position', 0.5)
+            # Extract technical indicators (tech_data is a TechnicalIndicators object)
+            rsi = getattr(tech_data, 'rsi', 50)
+            macd = getattr(tech_data, 'macd', 0)
+            macd_signal = getattr(tech_data, 'macd_signal', 0)
+            bollinger_position = getattr(tech_data, 'bollinger_position', 0.5)
             
             # Determine signal type and confidence
             signal_score = 0
@@ -282,12 +282,13 @@ class SignalGenerator:
             logger.error(f"Error creating sentiment signal for {symbol}: {e}")
             return None
     
-    def _create_simulation_signal(self, symbol: str, simulation_data: Dict) -> Optional[TradingSignal]:
+    def _create_simulation_signal(self, symbol: str, simulation_data) -> Optional[TradingSignal]:
         """Create signal from simulation results"""
         try:
-            expected_return = simulation_data.get('expected_return', 0)
-            probability_of_profit = simulation_data.get('probability_of_profit', 0.5)
-            var_95 = simulation_data.get('var_95', 0)
+            # simulation_data is a SimulationResult object
+            expected_return = getattr(simulation_data, 'expected_return', 0)
+            probability_of_profit = getattr(simulation_data, 'probability_of_profit', 0.5)
+            var_95 = getattr(simulation_data, 'var_95', 0)
             
             # Determine signal based on simulation results
             if expected_return > 0.1 and probability_of_profit > 0.6:
@@ -429,6 +430,9 @@ class SignalGenerator:
             confidence = 0.3
             strength = "weak"
         
+        # Debug logging
+        logger.debug(f"Signal fusion for {symbol}: net_score={net_score:.3f}, confidence={confidence:.3f}, signal={final_signal.value}")
+        
         return SignalFusion(
             symbol=symbol,
             final_signal=final_signal,
@@ -508,3 +512,4 @@ if __name__ == "__main__":
             print(f"{symbol}: {signal.final_signal.value} ({signal.confidence:.2f}) - {signal.reasoning}")
     
     asyncio.run(main())
+

@@ -121,3 +121,4 @@ class AlertManager:
         """Get recent alert history"""
         cutoff_time = datetime.now() - timedelta(hours=hours_back)
         return [alert for alert in self.alert_history if alert['timestamp'] >= cutoff_time]
+

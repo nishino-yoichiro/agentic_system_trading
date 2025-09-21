@@ -24,6 +24,7 @@ class CorrelationEngine:
     def __init__(self, window_size: int = 252):
         self.window_size = window_size
         self.correlation_cache = {}
+        self.min_window_size = 10  # Minimum data points for correlation
         
     async def calculate_correlation_matrix(self, returns_data: Dict[str, pd.Series]) -> np.ndarray:
         """Calculate dynamic correlation matrix"""
@@ -36,9 +37,14 @@ class CorrelationEngine:
         # Align data
         aligned_data = self._align_returns_data(returns_data)
         
-        if aligned_data is None or len(aligned_data) < self.window_size:
+        if aligned_data is None or len(aligned_data) < self.min_window_size:
             logger.warning("Insufficient data for correlation calculation, using identity matrix")
             return np.eye(n_assets)
+        
+        # Adjust window size based on available data
+        actual_window_size = min(len(aligned_data), self.window_size)
+        if actual_window_size < self.window_size:
+            logger.info(f"Using {actual_window_size} data points for correlation (requested: {self.window_size})")
         
         # Calculate correlation matrix
         correlation_matrix = aligned_data.corr().values
@@ -59,7 +65,7 @@ class CorrelationEngine:
                 else:
                     common_index = common_index.intersection(returns.index)
             
-            if len(common_index) < self.window_size:
+            if len(common_index) < self.min_window_size:
                 return None
             
             # Create aligned DataFrame
@@ -161,3 +167,4 @@ class CorrelationEngine:
         except Exception as e:
             logger.error(f"Error calculating correlation stability: {e}")
             return {}
+

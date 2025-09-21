@@ -110,9 +110,27 @@ class PortfolioOptimizer:
         """Filter assets that meet confidence threshold"""
         qualified = []
         
+        logger.info(f"Filtering assets with confidence threshold: {confidence_threshold}")
+        
         for symbol, signal_data in signals.items():
-            if isinstance(signal_data, dict) and 'confidence' in signal_data:
+            logger.info(f"Processing asset {symbol}: signal_data type = {type(signal_data)}")
+            if hasattr(signal_data, 'confidence'):
+                confidence = signal_data.confidence
+                logger.info(f"Asset {symbol}: confidence={confidence:.3f}, threshold={confidence_threshold:.3f}")
+                if confidence >= confidence_threshold:
+                    qualified.append({
+                        'symbol': symbol,
+                        'confidence': confidence,
+                        'signal_type': signal_data.final_signal.value if hasattr(signal_data, 'final_signal') else 'hold',
+                        'reasoning': signal_data.reasoning if hasattr(signal_data, 'reasoning') else '',
+                        'metadata': signal_data.metadata if hasattr(signal_data, 'metadata') else {}
+                    })
+                    logger.info(f"Asset {symbol} QUALIFIED with confidence {confidence:.3f}")
+                else:
+                    logger.info(f"Asset {symbol} REJECTED with confidence {confidence:.3f}")
+            elif isinstance(signal_data, dict) and 'confidence' in signal_data:
                 confidence = signal_data['confidence']
+                logger.info(f"Asset {symbol}: confidence={confidence:.3f}, threshold={confidence_threshold:.3f}")
                 if confidence >= confidence_threshold:
                     qualified.append({
                         'symbol': symbol,
@@ -121,7 +139,13 @@ class PortfolioOptimizer:
                         'reasoning': signal_data.get('reasoning', ''),
                         'metadata': signal_data.get('metadata', {})
                     })
+                    logger.info(f"Asset {symbol} QUALIFIED with confidence {confidence:.3f}")
+                else:
+                    logger.info(f"Asset {symbol} REJECTED with confidence {confidence:.3f}")
+            else:
+                logger.info(f"Asset {symbol}: Invalid signal data structure - {signal_data}")
         
+        logger.info(f"Qualified assets: {len(qualified)} out of {len(signals)}")
         return qualified
     
     def _select_top_assets(
@@ -389,3 +413,4 @@ if __name__ == "__main__":
             print(f"{allocation.symbol}: {allocation.weight:.2%} (Return: {allocation.expected_return:.2%})")
     
     asyncio.run(main())
+

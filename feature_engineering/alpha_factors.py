@@ -123,3 +123,4 @@ class FactorAnalyzer:
         """Calculate Information Ratio"""
         # Placeholder implementation
         return 0.0
+
