@@ -71,3 +71,6 @@ mypy>=1.4.0
 # Windows-compatible alternatives
 textblob>=0.17.0
 vaderSentiment>=3.3.2
+
+# Web deployment
+flask>=2.3.0

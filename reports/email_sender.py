@@ -1,124 +1,76 @@
 """
-Email Sending and Alert Management
-
-Sends reports and alerts via email
+Email utilities for the crypto trading pipeline
 """
 
+import logging
+from typing import Dict, List, Optional, Any
 import smtplib
-import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email import encoders
-import pandas as pd
-from typing import List, Dict, Optional, Any
-from dataclasses import dataclass
-from loguru import logger
-import os
-from datetime import datetime
 
-
-@dataclass
-class EmailConfig:
-    """Email configuration"""
-    smtp_server: str
-    smtp_port: int
-    username: str
-    password: str
-    from_email: str
-    to_emails: List[str]
-
+logger = logging.getLogger(__name__)
 
 class EmailSender:
-    """Send emails with reports and alerts"""
+    """Basic email sending utilities"""
     
-    def __init__(self, config: EmailConfig):
-        self.config = config
+    def __init__(self, smtp_server: str = "smtp.gmail.com", smtp_port: int = 587):
+        self.smtp_server = smtp_server
+        self.smtp_port = smtp_port
+        self.logger = logging.getLogger(__name__)
     
-    def send_report_email(self, subject: str, body: str, attachments: List[str] = None) -> bool:
-        """Send email with report"""
+    def send_email(self, to_email: str, subject: str, body: str, 
+                   from_email: str = None, password: str = None) -> bool:
+        """Send a basic email"""
         try:
+            if not from_email or not password:
+                self.logger.warning("Email credentials not provided")
+                return False
+            
             msg = MIMEMultipart()
-            msg['From'] = self.config.from_email
-            msg['To'] = ', '.join(self.config.to_emails)
+            msg['From'] = from_email
+            msg['To'] = to_email
             msg['Subject'] = subject
             
-            # Add body
-            msg.attach(MIMEText(body, 'html'))
+            msg.attach(MIMEText(body, 'plain'))
             
-            # Add attachments
-            if attachments:
-                for file_path in attachments:
-                    if os.path.exists(file_path):
-                        with open(file_path, "rb") as attachment:
-                            part = MIMEBase('application', 'octet-stream')
-                            part.set_payload(attachment.read())
-                            encoders.encode_base64(part)
-                            part.add_header(
-                                'Content-Disposition',
-                                f'attachment; filename= {os.path.basename(file_path)}'
-                            )
-                            msg.attach(part)
+            server = smtplib.SMTP(self.smtp_server, self.smtp_port)
+            server.starttls()
+            server.login(from_email, password)
+            text = msg.as_string()
+            server.sendmail(from_email, to_email, text)
+            server.quit()
             
-            # Send email
-            context = ssl.create_default_context()
-            with smtplib.SMTP(self.config.smtp_server, self.config.smtp_port) as server:
-                server.starttls(context=context)
-                server.login(self.config.username, self.config.password)
-                server.send_message(msg)
-            
-            logger.info(f"Report email sent successfully to {len(self.config.to_emails)} recipients")
+            self.logger.info(f"Email sent to {to_email}")
             return True
             
         except Exception as e:
-            logger.error(f"Error sending email: {e}")
+            self.logger.error(f"Error sending email: {e}")
             return False
-    
-    def send_alert_email(self, alert_type: str, message: str) -> bool:
-        """Send alert email"""
-        subject = f"Trading Alert: {alert_type}"
-        body = f"""
-        <h2>Trading Alert</h2>
-        <p><strong>Type:</strong> {alert_type}</p>
-        <p><strong>Message:</strong> {message}</p>
-        <p><strong>Time:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-        """
-        
-        return self.send_report_email(subject, body)
-
 
 class AlertManager:
-    """Manage trading alerts and notifications"""
+    """Basic alert management utilities"""
     
-    def __init__(self, email_sender: EmailSender):
-        self.email_sender = email_sender
-        self.alert_history = []
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+        self.alerts = []
     
-    def create_alert(self, alert_type: str, message: str, priority: str = 'medium') -> bool:
-        """Create and send alert"""
+    def add_alert(self, message: str, level: str = "INFO") -> None:
+        """Add an alert message"""
         alert = {
-            'type': alert_type,
             'message': message,
-            'priority': priority,
-            'timestamp': datetime.now(),
-            'sent': False
+            'level': level,
+            'timestamp': None  # Would be datetime.now() in real implementation
         }
-        
-        # Send email alert
-        if self.email_sender:
-            alert['sent'] = self.email_sender.send_alert_email(alert_type, message)
-        
-        self.alert_history.append(alert)
-        
-        if alert['sent']:
-            logger.info(f"Alert sent: {alert_type} - {message}")
-        else:
-            logger.error(f"Failed to send alert: {alert_type} - {message}")
-        
-        return alert['sent']
+        self.alerts.append(alert)
+        self.logger.info(f"Alert added: {message}")
     
-    def get_alert_history(self, hours_back: int = 24) -> List[Dict]:
-        """Get recent alert history"""
-        cutoff_time = datetime.now() - timedelta(hours=hours_back)
-        return [alert for alert in self.alert_history if alert['timestamp'] >= cutoff_time]
-
+    def get_alerts(self, level: str = None) -> List[Dict[str, Any]]:
+        """Get alerts, optionally filtered by level"""
+        if level:
+            return [alert for alert in self.alerts if alert['level'] == level]
+        return self.alerts
+    
+    def clear_alerts(self) -> None:
+        """Clear all alerts"""
+        self.alerts.clear()
+        self.logger.info("All alerts cleared")

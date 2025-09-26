@@ -538,11 +538,18 @@ async def main():
                        help='Start continuous data collection')
     parser.add_argument('--interval', type=int, default=20,
                        help='Continuous collection interval in seconds')
+    parser.add_argument('--ticker', type=str, default=None,
+                       help='Target specific ticker (e.g., BTC, ETH). If not specified, uses all configured symbols')
     
     args = parser.parse_args()
     
     # Create pipeline
     pipeline = EnhancedCryptoPipeline()
+    
+    # Override symbols if ticker is specified
+    if args.ticker:
+        pipeline.symbols = [args.ticker.upper()]
+        logger.info(f"Targeting specific ticker: {args.ticker.upper()}")
     
     if args.continuous:
         # Start continuous collection

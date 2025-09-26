@@ -103,6 +103,16 @@ python run_enhanced_pipeline.py --continuous --interval 20
 
 # Run with custom historical data range
 python run_enhanced_pipeline.py --setup-historical --days-back 180
+
+# Run with targeted ticker
+python run_enhanced_pipeline.py --ticker BTC
+```
+
+### 4. **Reports (currently supports BTC)**
+
+```bash
+# Run BTC recommendations report
+python btc_dashboard.py
 ```
 
 ## 📊 **Key Features**

@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass
 
 from .incremental_collector import IncrementalDataCollector, DataType, RefreshStrategy
+from .crypto_collector import CryptoDataCollector
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ class ContinuousDataCollector:
         self.api_keys = api_keys
         self.symbols = symbols
         self.collector = IncrementalDataCollector(data_dir, api_keys)
+        self.crypto_collector = CryptoDataCollector(api_keys)
         
         # Stats and control
         self.stats = CollectionStats(start_time=datetime.now())
@@ -58,8 +60,9 @@ class ContinuousDataCollector:
         
         # Rate limiting
         self.api_limits = {
-            'polygon': {'calls_per_minute': 5, 'last_reset': datetime.now()},
-            'coingecko': {'calls_per_minute': 50, 'last_reset': datetime.now()}
+            'polygon': {'calls_per_minute': 0, 'last_reset': datetime.now()},
+            'coingecko': {'calls_per_minute': 0, 'last_reset': datetime.now()},
+            'coinbase': {'calls_per_minute': 0, 'last_reset': datetime.now()}
         }
         
         # Setup signal handlers for graceful shutdown
@@ -75,7 +78,19 @@ class ContinuousDataCollector:
         """Check if we can make API calls within rate limits"""
         now = datetime.now()
         
-        for api, limits in self.api_limits.items():
+        # Determine which APIs we'll actually use
+        crypto_symbols = [s for s in self.symbols if s in ['BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'DOT', 'AVAX', 'MATIC', 'LINK', 'UNI']]
+        stock_symbols = [s for s in self.symbols if s not in crypto_symbols]
+        
+        # Check only the APIs we'll actually use
+        apis_to_check = []
+        if crypto_symbols:
+            apis_to_check.append('coinbase')
+        if stock_symbols:
+            apis_to_check.append('polygon')
+        
+        for api in apis_to_check:
+            limits = self.api_limits[api]
             # Reset counter if minute has passed
             if (now - limits['last_reset']).total_seconds() >= 60:
                 limits['calls_per_minute'] = 0
@@ -85,8 +100,8 @@ class ContinuousDataCollector:
             if api == 'polygon' and limits['calls_per_minute'] >= 5:
                 logger.warning("Polygon rate limit reached, waiting...")
                 return False
-            elif api == 'coingecko' and limits['calls_per_minute'] >= 50:
-                logger.warning("CoinGecko rate limit reached, waiting...")
+            elif api == 'coinbase' and limits['calls_per_minute'] >= 10:
+                logger.warning("Coinbase rate limit reached, waiting...")
                 return False
         
         return True
@@ -107,16 +122,39 @@ class ContinuousDataCollector:
             crypto_symbols = [s for s in self.symbols if s in ['BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'DOT', 'AVAX', 'MATIC', 'LINK', 'UNI']]
             stock_symbols = [s for s in self.symbols if s not in crypto_symbols]
             
-            # Collect data
-            result = await self.collector.collect_incremental_price_data(self.symbols)
+            results = {
+                'price_updates': {},
+                'collection_time': datetime.now(),
+                'symbols_updated': 0,
+                'api_calls_made': 0
+            }
             
-            # Record API calls
+            # Collect crypto data using Coinbase Advanced API
             if crypto_symbols:
-                self._record_api_call('coingecko')
-            if stock_symbols:
-                self._record_api_call('polygon')
+                logger.info(f"Collecting crypto data for {crypto_symbols} using Coinbase Advanced API")
+                crypto_result = await self.crypto_collector.collect_crypto_data(
+                    symbols=crypto_symbols,
+                    days_back=1  # Only 1 day for incremental updates
+                )
+                if crypto_result:
+                    results['price_updates'].update(crypto_result)
+                    results['api_calls_made'] += len(crypto_symbols)
+                    self._record_api_call('coinbase')
             
-            return result
+            # Collect stock data using existing method
+            if stock_symbols:
+                stock_result = await self.collector.collect_incremental_price_data(stock_symbols)
+                if stock_result and 'price_updates' in stock_result:
+                    results['price_updates'].update(stock_result['price_updates'])
+                    results['api_calls_made'] += stock_result.get('api_calls_made', 0)
+                    self._record_api_call('polygon')
+            
+            # Merge with existing data
+            if results['price_updates']:
+                await self.collector._merge_incremental_data(results['price_updates'])
+                results['symbols_updated'] = len(results['price_updates'])
+            
+            return results
             
         except Exception as e:
             logger.error(f"Error in rate-limited collection: {e}")
@@ -130,7 +168,7 @@ class ContinuousDataCollector:
         
         logger.info(f"Starting continuous collection for {self.symbols}")
         logger.info(f"Update interval: {interval_seconds} seconds")
-        logger.info(f"Rate limits: Polygon=5/min, CoinGecko=50/min")
+        logger.info(f"Rate limits: Polygon=5/min, CoinGecko=50/min, Coinbase=10/min")
         
         try:
             while self.running:
