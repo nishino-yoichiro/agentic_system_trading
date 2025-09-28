@@ -131,7 +131,7 @@ class IndicatorCalculator:
                 stochastic_k=self._safe_calculate(lambda: ta.momentum.stoch(df['high'], df['low'], df['close']).iloc[-1]),
                 stochastic_d=self._safe_calculate(lambda: ta.momentum.stoch_signal(df['high'], df['low'], df['close']).iloc[-1]),
                 williams_r=self._safe_calculate(lambda: ta.momentum.williams_r(df['high'], df['low'], df['close']).iloc[-1]),
-                cci=self._safe_calculate(lambda: ta.momentum.cci(df['high'], df['low'], df['close']).iloc[-1]),
+                cci=self._safe_calculate(lambda: ta.trend.cci(df['high'], df['low'], df['close']).iloc[-1]),
                 roc=self._safe_calculate(lambda: ta.momentum.roc(df['close'], window=10).iloc[-1]),
                 
                 # Bollinger Bands
@@ -148,7 +148,7 @@ class IndicatorCalculator:
                 keltner_lower=self._calculate_keltner_lower(df),
                 
                 # Volume indicators
-                volume_sma=self._safe_calculate(lambda: ta.volume.volume_sma(df['close'], df['volume']).iloc[-1]),
+                volume_sma=self._safe_calculate(lambda: df['volume'].rolling(window=20).mean().iloc[-1]),
                 volume_ratio=self._calculate_volume_ratio(df),
                 obv=self._safe_calculate(lambda: ta.volume.on_balance_volume(df['close'], df['volume']).iloc[-1]),
                 ad_line=self._safe_calculate(lambda: ta.volume.acc_dist_index(df['high'], df['low'], df['close'], df['volume']).iloc[-1]),

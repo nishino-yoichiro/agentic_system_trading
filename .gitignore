@@ -4,3 +4,5 @@ config/
 data/
 logs/
 reports/
+portfolio_reports/
+backtests/

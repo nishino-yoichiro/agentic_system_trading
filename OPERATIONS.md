@@ -78,6 +78,23 @@ python btc_dashboard.py
 - Professional TradingView charts + our signals
 - Mobile-friendly design
 
+### 5.0) BTC Sentiment Dashboard (Advanced)
+Interactive dashboard with sentiment analysis controls and real-time parameter adjustment:
+```powershell
+python btc_sentiment_dashboard.py
+```
+Or use the batch file:
+```powershell
+./start_sentiment_dashboard.bat
+```
+- Opens at: http://localhost:8081
+- **Interactive Controls:** Real-time sentiment weight (α) slider (0.0 - 2.0)
+- **Live Comparison:** Base technical vs sentiment-enhanced signals side-by-side
+- **Sentiment Metrics:** Current sentiment score, multiplier, and impact visualization
+- **Reasoning Display:** Detailed explanation of why sentiment affects the signal
+- **Auto-refresh:** Updates every 5 minutes with latest news sentiment
+- **Formula:** Enhanced Signal = Base Signal × (1 + α × Sentiment)
+
 ### 5.1) BTC Backtesting
 Test trading strategy performance on historical data with customizable parameters:
 ```powershell
@@ -154,6 +171,183 @@ python run_enhanced_pipeline.py
 ```powershell
 python run_enhanced_pipeline.py --continuous --interval 30
 ```
+
+### 10) Unified Multi-Symbol Dashboard (NEW)
+
+#### Quick Start
+```powershell
+# Default symbols (BTC, ETH, ADA, SOL)
+python run_crypto_dashboard.py
+
+# Or use batch file
+./run_crypto_dashboard.bat
+
+# Custom symbols
+python run_crypto_dashboard.py BTC ETH ADA SOL AVAX
+```
+
+#### Features
+- **Multi-Symbol Analysis**: Real-time analysis for any combination of crypto assets
+- **Sentiment Integration**: Interactive sentiment weight control with live updates
+- **News Visualization**: Filterable news articles with sentiment analysis
+- **Portfolio View**: Side-by-side comparison of all selected symbols
+- **Auto-Refresh**: Automatic updates every 5 minutes
+- **Mobile-Friendly**: Responsive design for all devices
+
+**Available Symbols:** BTC, ETH, ADA, AVAX, DOT, LINK, MATIC, SOL, UNI
+
+**Dashboard URL:** http://localhost:8080
+
+### 11) Continuous News Collection (NEW)
+
+#### Quick Start
+```powershell
+# Default: Collect news every hour for all crypto symbols
+python continuous_news_collector.py
+
+# Or use batch file
+./start_news_collection.bat
+
+# Custom symbols and interval
+python continuous_news_collector.py --symbols BTC ETH ADA SOL --interval 2
+```
+
+#### Features
+- **Continuous Collection**: Runs in background, collecting news every hour (configurable)
+- **Multi-Symbol Support**: Collects news for all crypto symbols simultaneously
+- **Intelligent Caching**: Appends new articles without duplicates
+- **Comprehensive Sources**: NewsAPI, CryptoCompare, CoinDesk RSS, Reddit
+- **Statistics Tracking**: Detailed collection stats and success rates
+- **Graceful Shutdown**: Ctrl+C to stop cleanly
+
+**Parameters:**
+- `--symbols`: Space-separated list of symbols (default: BTC, ETH, ADA, SOL, AVAX, DOT, LINK, MATIC, UNI)
+- `--interval`: Collection interval in hours (default: 1)
+- `--data-dir`: Data directory (default: data)
+
+**Output:**
+- News data: `data/raw/news.parquet`
+- Collection stats: `data/logs/news_collection_stats.json`
+- Logs: `logs/continuous_news_collection.log`
+
+**Usage Examples:**
+```powershell
+# Collect news every 30 minutes for BTC and ETH only
+python continuous_news_collector.py --symbols BTC ETH --interval 0.5
+
+# Collect news every 2 hours for all crypto symbols
+python continuous_news_collector.py --interval 2
+
+# Run in background (Windows)
+start /B python continuous_news_collector.py
+```
+
+### 12) Advanced Portfolio Management System (NEW)
+
+#### Quick Start
+```powershell
+# Run the complete advanced portfolio system demo
+python run_advanced_portfolio.py
+
+# Test the system components
+python test_advanced_portfolio.py
+
+# Integrate with existing crypto pipeline
+python integrate_advanced_portfolio.py
+```
+
+#### Features
+- **Low-Correlation Strategy Basket**: 5 orthogonal strategies across different instruments and mechanisms
+- **Kelly Sizing**: Optimal position sizing based on expected returns and correlations
+- **Regime Filtering**: Strategies only trade in favorable market conditions
+- **Volatility Targeting**: All strategies normalized to 10% annualized volatility
+- **Correlation Control**: Automatic de-weighting of highly correlated strategies
+- **Risk Controls**: Portfolio-level kill switches and drawdown limits
+- **Walk-Forward Backtesting**: Out-of-sample testing with parameter re-estimation
+
+#### Strategy Basket
+1. **ES Sweep/Reclaim** - Intraday futures strategy for NY open
+2. **NQ Breakout Continuation** - High-vol regime breakout strategy  
+3. **SPY Mean Reversion** - Overnight gap fade in low-vol regimes
+4. **EURUSD Carry/Trend** - FX strategy with MA filter
+5. **Options IV Crush** - Event-driven volatility strategy
+
+#### Advanced Features
+- **Portfolio Optimization**: Risk-parity base with Sharpe tilt and correlation penalty
+- **Regime Detection**: ADX-based trend/range detection, volatility classification
+- **Correlation Analysis**: Rolling correlation tracking with surge detection
+- **Comprehensive Reporting**: Equity curves, allocation heatmaps, regime analysis
+- **Crypto Integration**: Seamless integration with existing crypto pipeline
+
+#### Usage Examples
+```powershell
+# Run with custom parameters
+python run_advanced_portfolio.py --capital 200000 --volatility 0.15 --kelly 0.5
+
+# Test specific components
+python test_advanced_portfolio.py --test portfolio_manager
+python test_advanced_portfolio.py --test strategy_framework
+
+# Generate crypto-specific portfolio
+python integrate_advanced_portfolio.py --symbols BTC ETH ADA SOL --days 90
+```
+
+**Output Files:**
+- `portfolio_reports/` - Comprehensive portfolio analysis
+- `crypto_portfolio_reports/` - Crypto-specific analysis
+- Detailed JSON results and markdown reports
+- Professional visualizations and charts
+
+### 13) Multi-Symbol Backtesting (Universal)
+
+#### Quick Multi-Symbol Backtest
+```powershell
+# Interactive mode
+python run_multi_backtest.py
+
+# Or use batch file
+./run_multi_backtest.bat
+```
+
+#### Direct Command Line Usage
+```powershell
+# Basic multi-symbol backtest
+python multi_symbol_backtester.py --symbols BTC ETH ADA --days 7 --capital 10000
+
+# With sentiment enhancement
+python multi_symbol_backtester.py --symbols BTC ETH ADA --days 7 --capital 10000 --sentiment
+
+# With portfolio analysis and rebalancing
+python multi_symbol_backtester.py --symbols BTC ETH ADA SOL --days 7 --capital 10000 --sentiment --portfolio
+
+# Verbose output (shows all trades)
+python multi_symbol_backtester.py --symbols BTC ETH --days 3 --capital 5000 --sentiment --verbose
+```
+
+**Available Symbols:** BTC, ETH, ADA, AVAX, DOT, LINK, MATIC, SOL, UNI
+
+**Features:**
+- Universal backtesting for any combination of crypto assets
+- Individual symbol analysis with detailed metrics
+- Portfolio-level backtesting with equal-weight rebalancing
+- Sentiment-enhanced strategy support
+- Comparative visualization and reporting
+- Correlation analysis between symbols
+- Comprehensive markdown reports with charts
+
+**Parameters:**
+- `--symbols`: Space-separated list of symbols to backtest
+- `--days`: Number of days to backtest (default: 3)
+- `--capital`: Initial capital amount (default: 10000)
+- `--alpha`: Sentiment multiplier weight (default: 0.5)
+- `--sentiment`: Use sentiment-enhanced strategy
+- `--portfolio`: Run portfolio backtest with rebalancing
+- `--verbose`: Show detailed trade log
+- `--output-dir`: Output directory for results (default: backtests/results)
+
+**Output Files:**
+- `backtests/results/multi_symbol_backtest_YYYYMMDD_HHMMSS.png` - Comparative charts
+- `backtests/results/multi_symbol_backtest_YYYYMMDD_HHMMSS.md` - Detailed report
 
 ### Notes
 - Incremental merging ensures only unseen timestamps are appended; duplicates are dropped on `timestamp`.
