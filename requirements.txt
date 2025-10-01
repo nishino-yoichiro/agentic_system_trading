@@ -24,5 +24,12 @@ loguru>=0.7.0
 # Data processing
 tqdm>=4.65.0
 
+# Web scraping and async
+aiohttp>=3.8.0
+feedparser>=6.0.0
+
+# Configuration
+PyYAML>=6.0
+
 # NOTE: Intentionally exclude exchange SDKs that conflict on websockets
 # coinbase-advanced-py and polygon-api-client are omitted here
