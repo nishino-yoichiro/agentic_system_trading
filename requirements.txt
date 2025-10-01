@@ -14,5 +14,8 @@ textblob==0.18.0.post0
 vaderSentiment==3.3.2
 nltk==3.9.1
 
+# Logging
+loguru>=0.7.0
+
 # NOTE: Intentionally exclude exchange SDKs that conflict on websockets
 # coinbase-advanced-py and polygon-api-client are omitted here
