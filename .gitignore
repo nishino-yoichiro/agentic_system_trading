@@ -2,6 +2,7 @@
 enh_venv/
 config/
 data/
+!data/crypto_db/BTC_historical.parquet
 logs/
 reports/
 portfolio_reports/
