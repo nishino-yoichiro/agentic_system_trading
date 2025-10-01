@@ -104,7 +104,7 @@ class CryptoSignalIntegration:
         
         return signal_dicts
     
-    def backtest_signals(self, symbols: List[str], days: int = 90, initial_capital: float = 100000) -> Dict:
+    def backtest_signals(self, symbols: List[str], days: int = 90, initial_capital: float = 100000, step: int = 10) -> Dict:
         """Backtest the signal framework"""
         logger.info(f"Starting backtest for {symbols} over {days} days")
         
@@ -127,8 +127,11 @@ class CryptoSignalIntegration:
             all_timestamps.update(df.index)
         all_timestamps = sorted(list(all_timestamps))
         
-        # Run backtest day by day
-        for i, timestamp in enumerate(all_timestamps):
+        # Run backtest with stride to speed up (evaluate every 'step' bars)
+        if step <= 0:
+            step = 1
+        for i in range(0, len(all_timestamps), step):
+            timestamp = all_timestamps[i]
             # Get data up to current timestamp
             current_data = {}
             for symbol, df in data.items():
