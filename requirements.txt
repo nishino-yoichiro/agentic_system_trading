@@ -9,13 +9,20 @@ scipy>=1.11.4
 ta==0.11.0
 plotly==5.23.0
 
-# NLP used by sentiment modules (lightweight)
+# Machine Learning
+scikit-learn>=1.3.0
+yfinance>=0.2.0
+
+# NLP used by sentiment modules
 textblob==0.18.0.post0
 vaderSentiment==3.3.2
 nltk==3.9.1
 
 # Logging
 loguru>=0.7.0
+
+# Data processing
+tqdm>=4.65.0
 
 # NOTE: Intentionally exclude exchange SDKs that conflict on websockets
 # coinbase-advanced-py and polygon-api-client are omitted here
