@@ -31,5 +31,10 @@ feedparser>=6.0.0
 # Configuration
 PyYAML>=6.0
 
-# NOTE: Intentionally exclude exchange SDKs that conflict on websockets
-# coinbase-advanced-py and polygon-api-client are omitted here
+# Optional exchange clients (commented out to avoid websockets conflicts)
+# Uncomment these if you need exchange functionality:
+# coinbase-advanced-py>=1.8.0
+# polygon-api-client>=1.13.0
+
+# NOTE: These are excluded by default due to websockets dependency conflicts
+# The app will work without them using fallback data sources
