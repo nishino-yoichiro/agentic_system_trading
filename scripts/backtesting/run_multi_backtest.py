@@ -8,6 +8,9 @@ import sys
 import subprocess
 from pathlib import Path
 
+# Add src to path
+sys.path.append(str(Path(__file__).parent.parent.parent / "src"))
+
 def main():
     """Run multi-symbol backtest with command line arguments"""
     
@@ -20,12 +23,11 @@ def main():
     print()
     
     # Get user input
-    symbols_input = input("Enter symbols to backtest (space-separated): ").strip()
+    symbols_input = input("Enter symbols to backtest (space-separated, default: all): ").strip()
     if not symbols_input:
-        print("No symbols provided!")
-        return
-    
-    symbols = [s.upper().strip() for s in symbols_input.split()]
+        symbols = available_symbols  # Default to all symbols
+    else:
+        symbols = [s.upper().strip() for s in symbols_input.split()]
     
     # Validate symbols
     invalid_symbols = [s for s in symbols if s not in available_symbols]
@@ -33,6 +35,26 @@ def main():
         print(f"Invalid symbols: {', '.join(invalid_symbols)}")
         print(f"Available: {', '.join(available_symbols)}")
         return
+    
+    # Get strategy selection
+    available_strategies = [
+        'btc_asia_sweep', 'eth_breakout_continuation', 'btc_mean_reversion',
+        'eth_funding_arb', 'btc_vol_compression', 'eth_basis_trade',
+        'btc_ny_open_london_sweep', 'btc_ny_session'
+    ]
+    
+    print(f"Available strategies: {', '.join(available_strategies)}")
+    strategies_input = input("Enter strategies to use (space-separated, default: all): ").strip()
+    
+    if strategies_input:
+        strategies = [s.strip() for s in strategies_input.split()]
+        invalid_strategies = [s for s in strategies if s not in available_strategies]
+        if invalid_strategies:
+            print(f"Invalid strategies: {', '.join(invalid_strategies)}")
+            print(f"Available: {', '.join(available_strategies)}")
+            return
+    else:
+        strategies = available_strategies  # Default to all strategies
     
     # Get other parameters
     days = input("Days to backtest (default 3): ").strip()
@@ -49,8 +71,9 @@ def main():
     
     # Build command
     cmd = [
-        sys.executable, 'multi_symbol_backtester.py',
+        sys.executable, str(Path(__file__).parent / 'multi_symbol_backtester.py'),
         '--symbols'] + symbols + [
+        '--strategies'] + strategies + [
         '--days', str(days),
         '--capital', str(capital)
     ]

@@ -107,6 +107,32 @@ class CryptoTradingStrategies:
             ),
             'function': self.eth_cross_exchange_basis
         }
+        
+        # 7. BTC NY Open London Low Sweep
+        self.strategies['btc_ny_open_london_sweep'] = {
+            'config': StrategyConfig(
+                name='btc_ny_open_london_sweep',
+                symbol='BTC',
+                mechanism='liquidity_sweep',
+                horizon='intraday',
+                session='ny',
+                regime_filters=[RegimeType.NY_SESSION, RegimeType.HIGH_VOL]
+            ),
+            'function': self.btc_ny_open_london_sweep
+        }
+        
+        # 8. BTC NY Session Buy/Sell
+        self.strategies['btc_ny_session'] = {
+            'config': StrategyConfig(
+                name='btc_ny_session',
+                symbol='BTC',
+                mechanism='session_trade',
+                horizon='intraday',
+                session='ny',
+                regime_filters=None  # Remove regime filters for testing
+            ),
+            'function': self.btc_ny_session_trade
+        }
     
     def btc_asia_liquidity_sweep(self, data: pd.DataFrame, regime: Dict[RegimeType, bool]) -> Optional[Signal]:
         """
@@ -494,6 +520,153 @@ class CryptoTradingStrategies:
             stop_loss = entry_price * 0.992  # 0.8% stop
             take_profit = entry_price * 1.004  # 0.4% target
             reason = f"ETH basis trade long - basis: {simulated_basis:.2f}bp"
+        
+        if signal_type != SignalType.FLAT:
+            return Signal(
+                signal_type=signal_type,
+                confidence=confidence,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                reason=reason
+            )
+        
+        return None
+    
+    def btc_ny_open_london_sweep(self, data: pd.DataFrame, regime: Dict[RegimeType, bool]) -> Optional[Signal]:
+        """
+        BTC NY Open London Low Sweep Strategy
+        
+        Principle: NY open often sweeps London session lows with volume surge
+        - Look for price sweep below London session low (last 8 hours)
+        - Enter on reclaim above London low with volume confirmation
+        - Target: 0.5-1% move with tight stop below London low
+        """
+        if len(data) < 50:
+            return None
+        
+        # Calculate London session low (last 8 hours = 32 periods for 15min data)
+        london_low = data['low'].rolling(32).min()
+        
+        # Current levels
+        current_close = data['close'].iloc[-1]
+        current_low = data['low'].iloc[-1]
+        current_high = data['high'].iloc[-1]
+        current_volume = data['volume'].iloc[-1]
+        
+        # London session levels
+        london_low_level = london_low.iloc[-2]  # Previous period's London low
+        london_high_level = data['high'].rolling(32).max().iloc[-2]
+        
+        # Check for London low sweep
+        london_sweep = current_low < london_low_level * 0.998  # 0.2% below London low
+        
+        # Check for reclaim above London low
+        london_reclaim = current_close > london_low_level
+        
+        # Volume confirmation - NY open typically has volume surge
+        avg_volume = data['volume'].rolling(20).mean().iloc[-1]
+        volume_surge = current_volume > avg_volume * 1.8  # 80% above average
+        
+        # Additional confirmation - price should be recovering
+        recovery = current_close > current_low * 1.002  # 0.2% above the low
+        
+        confidence = 0.0
+        signal_type = SignalType.FLAT
+        entry_price = current_close
+        stop_loss = None
+        take_profit = None
+        reason = ""
+        
+        if london_sweep and london_reclaim and volume_surge and recovery:
+            signal_type = SignalType.LONG
+            confidence = 0.80
+            stop_loss = london_low_level * 0.995  # 0.5% below London low
+            take_profit = entry_price * 1.008  # 0.8% target
+            reason = f"BTC NY open London sweep reclaim - swept {london_low_level:.2f}, reclaimed at {current_close:.2f}"
+        
+        if signal_type != SignalType.FLAT:
+            return Signal(
+                signal_type=signal_type,
+                confidence=confidence,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                reason=reason
+            )
+        
+        return None
+    
+    def btc_ny_session_trade(self, data: pd.DataFrame, regime: Dict[RegimeType, bool]) -> Optional[Signal]:
+        """
+        BTC NY Session Buy/Sell Strategy
+        
+        Principle: Simple buy at NY open, sell at NY close
+        - Buy when NY session starts (9:30 AM ET)
+        - Sell when NY session ends (4:00 PM ET)
+        - Target: Capture intraday NY session moves
+        """
+        if len(data) < 50:
+            return None
+        
+        
+        # Get current timestamp (assuming data has datetime index)
+        current_time = data.index[-1]
+        
+        # Convert to NY timezone for session detection
+        if hasattr(current_time, 'tz'):
+            if current_time.tz is None:
+                ny_time = current_time.tz_localize('UTC').tz_convert('America/New_York')
+            else:
+                ny_time = current_time.tz_convert('America/New_York')
+        else:
+            ny_time = current_time
+        
+        # Extract hour and minute
+        hour = ny_time.hour
+        minute = ny_time.minute
+        
+        # NY session times (9:30 AM - 4:00 PM ET)
+        ny_open_time = 9 * 60 + 30  # 9:30 AM in minutes
+        ny_close_time = 16 * 60      # 4:00 PM in minutes
+        current_minutes = hour * 60 + minute
+        
+        # Check if we're in NY session
+        in_ny_session = ny_open_time <= current_minutes <= ny_close_time
+        
+        # Simple: Generate signals for any NY session time
+        # Buy in first half of session, sell in second half
+        session_midpoint = (ny_open_time + ny_close_time) // 2  # ~12:45 PM
+        
+        is_morning = ny_open_time <= current_minutes <= session_midpoint
+        is_afternoon = session_midpoint < current_minutes <= ny_close_time
+        
+        
+        current_close = data['close'].iloc[-1]
+        
+        confidence = 0.0
+        signal_type = SignalType.FLAT
+        entry_price = current_close
+        stop_loss = None
+        take_profit = None
+        reason = ""
+        
+        # Generate signals only at specific times (once per day)
+        # Buy at NY open (9:30 AM) - only at exact open time
+        if in_ny_session and current_minutes == ny_open_time:
+            signal_type = SignalType.LONG
+            confidence = 0.70
+            stop_loss = entry_price * 0.98  # 2% stop loss
+            take_profit = entry_price * 1.03  # 3% take profit
+            reason = f"BTC NY open buy - {ny_time.strftime('%H:%M')} ET"
+            
+        # Sell at NY close (4:00 PM) - only at exact close time
+        elif in_ny_session and current_minutes == ny_close_time:
+            signal_type = SignalType.SHORT
+            confidence = 0.70
+            stop_loss = entry_price * 1.02  # 2% stop loss
+            take_profit = entry_price * 0.97  # 3% take profit
+            reason = f"BTC NY close sell - {ny_time.strftime('%H:%M')} ET"
         
         if signal_type != SignalType.FLAT:
             return Signal(

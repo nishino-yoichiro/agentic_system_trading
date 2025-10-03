@@ -23,6 +23,7 @@ loguru>=0.7.0
 
 # Data processing
 tqdm>=4.65.0
+schedule>=1.2.0
 
 # Web scraping and async
 aiohttp>=3.8.0

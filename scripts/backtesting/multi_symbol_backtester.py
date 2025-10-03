@@ -18,8 +18,13 @@ from dataclasses import dataclass
 import warnings
 warnings.filterwarnings('ignore')
 
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent.parent / "src"))
+
 from crypto_analysis_engine import CryptoAnalysisEngine
 from crypto_signal_generator import CryptoSentimentGenerator
+from crypto_signal_integration import CryptoSignalIntegration
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
@@ -68,6 +73,7 @@ class MultiSymbolBacktester:
         self.rebalance_frequency = rebalance_frequency
         self.analysis_engine = CryptoAnalysisEngine()
         self.sentiment_generator = CryptoSentimentGenerator(alpha=alpha)
+        self.signal_integration = None  # Will be initialized with selected strategies
         
         # Available symbols from data directory
         self.available_symbols = self._get_available_symbols()
@@ -132,8 +138,45 @@ class MultiSymbolBacktester:
         
         return pd.DataFrame(signals)
     
+    def generate_signals_with_framework(self, symbol: str, days: int = 7, strategies: List[str] = None) -> pd.DataFrame:
+        """Generate signals using the new crypto signal framework with historical data"""
+        try:
+            # Initialize signal integration with selected strategies
+            if self.signal_integration is None or strategies:
+                self.signal_integration = CryptoSignalIntegration(selected_strategies=strategies)
+                logger.info(f"Initialized signal integration with strategies: {strategies}")
+            
+            # Generate signals once for the entire period
+            signal_data = self.signal_integration.generate_signals([symbol], days=days, strategies=strategies)
+            
+            signals = []
+            for signal_dict in signal_data:
+                if signal_dict['symbol'] == symbol and signal_dict['signal_type'] != 'HOLD':
+                    # Convert signal types to backtester format
+                    action = 'BUY' if signal_dict['signal_type'] == 'LONG' else 'SELL' if signal_dict['signal_type'] == 'SHORT' else 'HOLD'
+                    
+                    signals.append({
+                        'timestamp': pd.Timestamp(signal_dict['timestamp']),
+                        'price': signal_dict['entry_price'],
+                        'action': action,
+                        'confidence': signal_dict['confidence'],
+                        'signal_score': signal_dict['confidence'],
+                        'sentiment_score': 0,
+                        'reason': signal_dict['reason']
+                    })
+            
+            logger.info(f"Generated {len(signals)} signals for {symbol} using new framework")
+            return pd.DataFrame(signals)
+            
+        except Exception as e:
+            logger.error(f"Error generating signals with framework: {e}")
+            print(f"DEBUG: Exception in generate_signals_with_framework: {e}")
+            import traceback
+            traceback.print_exc()
+            return pd.DataFrame()
+    
     def backtest_symbol(self, symbol: str, days: int = 3, use_sentiment: bool = False,
-                       verbose: bool = False) -> BacktestResult:
+                       verbose: bool = False, strategies: List[str] = None) -> BacktestResult:
         """Backtest a single symbol"""
         logger.info(f"Backtesting {symbol} ({'sentiment-enhanced' if use_sentiment else 'original'} strategy)")
         
@@ -142,13 +185,18 @@ class MultiSymbolBacktester:
         if df.empty:
             raise ValueError(f"No data available for {symbol}")
         
-        # Generate signals
-        signals_df = self.generate_signals_for_symbol(df, symbol, use_sentiment=use_sentiment)
+        # Generate signals using new framework
+        signals_df = self.generate_signals_with_framework(symbol, days=days, strategies=strategies)
+        
+        # If no signals from new framework, fall back to old method
+        if signals_df.empty:
+            logger.info(f"No signals from new framework, using fallback for {symbol}")
+            signals_df = self.generate_signals_for_symbol(df, symbol, use_sentiment=use_sentiment)
         
         # Execute trades
         trades = []
         capital = self.initial_capital
-        position = 0
+        position = 0  # Net position (positive = long, negative = short)
         equity_curve = []
         
         for _, signal in signals_df.iterrows():
@@ -157,10 +205,10 @@ class MultiSymbolBacktester:
             confidence = signal['confidence']
             
             # Execute trade
-            if action == 'BUY' and position == 0 and capital > current_price:
+            if action == 'BUY':
                 # Buy with available capital
                 shares = capital / current_price
-                position = shares
+                position += shares
                 capital = 0
                 
                 trade = {
@@ -168,7 +216,7 @@ class MultiSymbolBacktester:
                     'action': 'BUY',
                     'price': current_price,
                     'shares': shares,
-                    'capital_used': capital + (shares * current_price),
+                    'capital_used': shares * current_price,
                     'confidence': confidence,
                     'signal_score': signal['signal_score'],
                     'sentiment_score': signal['sentiment_score']
@@ -176,18 +224,21 @@ class MultiSymbolBacktester:
                 trades.append(trade)
                 
                 if verbose:
-                    print(f"BUY {shares:.6f} {symbol} at ${current_price:.2f} (Confidence: {confidence:.2f})")
+                    timestamp_str = signal['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
+                    print(f"BUY {shares:.6f} {symbol} at ${current_price:.2f} (Net position: {position:.6f}) - {timestamp_str}")
                     
-            elif action == 'SELL' and position > 0:
-                # Sell all shares
-                capital = position * current_price
+            elif action == 'SELL':
+                # Sell all available capital (short if needed)
+                shares = capital / current_price
+                position -= shares
+                capital = 0
                 
                 trade = {
                     'timestamp': signal['timestamp'],
                     'action': 'SELL',
                     'price': current_price,
-                    'shares': position,
-                    'capital_gained': capital,
+                    'shares': shares,
+                    'capital_gained': shares * current_price,
                     'confidence': confidence,
                     'signal_score': signal['signal_score'],
                     'sentiment_score': signal['sentiment_score']
@@ -195,16 +246,22 @@ class MultiSymbolBacktester:
                 trades.append(trade)
                 
                 if verbose:
-                    print(f"SELL {position:.6f} {symbol} at ${current_price:.2f} (Confidence: {confidence:.2f})")
-                
-                position = 0
+                    timestamp_str = signal['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
+                    print(f"SELL {shares:.6f} {symbol} at ${current_price:.2f} (Net position: {position:.6f}) - {timestamp_str}")
+            
+            # Update equity curve
+            current_equity = capital + (position * current_price)
+            equity_curve.append({'timestamp': signal['timestamp'], 'equity': current_equity})
         
-        # Final valuation
-        if position > 0:
-            final_price = df['close'].iloc[-1]
+        # Final liquidation at end of backtest
+        final_price = df['close'].iloc[-1]
+        if position != 0:
+            # Liquidate all remaining position
             capital = position * final_price
             if verbose:
-                print(f"Final position: {position:.6f} {symbol} at ${final_price:.2f}")
+                final_timestamp = df.index[-1].strftime('%Y-%m-%d %H:%M:%S')
+                print(f"Final liquidation: {position:.6f} {symbol} at ${final_price:.2f} = ${capital:.2f} - {final_timestamp}")
+            position = 0
         
         # Calculate metrics
         total_return = (capital - self.initial_capital) / self.initial_capital
@@ -288,7 +345,7 @@ class MultiSymbolBacktester:
         )
     
     def backtest_multiple_symbols(self, symbols: List[str], days: int = 3, 
-                                use_sentiment: bool = False, verbose: bool = False) -> Dict[str, BacktestResult]:
+                                use_sentiment: bool = False, verbose: bool = False, strategies: List[str] = None) -> Dict[str, BacktestResult]:
         """Backtest multiple symbols individually"""
         results = {}
         
@@ -296,18 +353,34 @@ class MultiSymbolBacktester:
             if symbol.upper() not in self.available_symbols:
                 logger.warning(f"Symbol {symbol} not available. Available: {self.available_symbols}")
                 continue
-                
+            
             try:
-                result = self.backtest_symbol(symbol, days, use_sentiment, verbose)
-                results[symbol.upper()] = result
+                result = self.backtest_symbol(symbol, days, use_sentiment, verbose, strategies)
+                results[symbol] = result
                 logger.info(f"Completed backtest for {symbol}: {result.total_return:.2%} return")
             except Exception as e:
-                logger.error(f"Failed to backtest {symbol}: {e}")
+                logger.error(f"Exception in backtest_symbol for {symbol}: {e}")
+                # Create a dummy result to continue
+                from dataclasses import dataclass
+                @dataclass
+                class DummyResult:
+                    start_date = None
+                    end_date = None
+                    initial_capital = 10000
+                    final_capital = 10000
+                    total_return = 0.0
+                    sharpe_ratio = 0.0
+                    max_drawdown = 0.0
+                    total_trades = 0
+                    win_rate = 0.0
+                    equity_curve = None
+                results[symbol] = DummyResult()
+                continue
         
         return results
     
     def backtest_portfolio(self, symbols: List[str], days: int = 3, 
-                          use_sentiment: bool = False, equal_weight: bool = True) -> PortfolioResult:
+                          use_sentiment: bool = False, equal_weight: bool = True, strategies: List[str] = None) -> PortfolioResult:
         """Backtest a portfolio of symbols with rebalancing"""
         logger.info(f"Backtesting portfolio: {symbols} ({'sentiment-enhanced' if use_sentiment else 'original'} strategy)")
         
@@ -612,6 +685,8 @@ def main():
     parser = argparse.ArgumentParser(description='Multi-Symbol Crypto Backtester')
     parser.add_argument('--symbols', nargs='+', required=True, 
                        help='Symbols to backtest (e.g., BTC ETH ADA)')
+    parser.add_argument('--strategies', nargs='*', default=None,
+                       help='Strategies to use (e.g., btc_asia_sweep eth_breakout_continuation). Default: all')
     parser.add_argument('--days', type=int, default=3, 
                        help='Number of days to backtest (default: 3)')
     parser.add_argument('--capital', type=float, default=10000.0, 
@@ -652,7 +727,8 @@ def main():
             valid_symbols, 
             days=args.days, 
             use_sentiment=args.sentiment,
-            verbose=args.verbose
+            verbose=args.verbose,
+            strategies=args.strategies
         )
         
         # Run portfolio backtest if requested
@@ -661,7 +737,8 @@ def main():
             portfolio_result = backtester.backtest_portfolio(
                 valid_symbols,
                 days=args.days,
-                use_sentiment=args.sentiment
+                use_sentiment=args.sentiment,
+                strategies=args.strategies
             )
         
         # Generate report

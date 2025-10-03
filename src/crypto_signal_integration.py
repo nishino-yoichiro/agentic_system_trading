@@ -17,10 +17,16 @@ from pathlib import Path
 import json
 from datetime import datetime, timedelta
 
-from crypto_signal_framework import CryptoSignalFramework, StrategyConfig
-from crypto_trading_strategies import CryptoTradingStrategies
-from crypto_analysis_engine import CryptoAnalysisEngine
-from crypto_signal_generator import CryptoSentimentGenerator
+import crypto_signal_framework
+import crypto_trading_strategies
+import crypto_analysis_engine
+import crypto_signal_generator
+
+CryptoSignalFramework = crypto_signal_framework.CryptoSignalFramework
+StrategyConfig = crypto_signal_framework.StrategyConfig
+CryptoTradingStrategies = crypto_trading_strategies.CryptoTradingStrategies
+CryptoAnalysisEngine = crypto_analysis_engine.CryptoAnalysisEngine
+CryptoSentimentGenerator = crypto_signal_generator.CryptoSentimentGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +35,7 @@ class CryptoSignalIntegration:
     Main integration class that connects signal framework with crypto pipeline
     """
     
-    def __init__(self, data_dir: str = "data"):
+    def __init__(self, data_dir: str = "data", selected_strategies: List[str] = None):
         self.data_dir = Path(data_dir)
         self.framework = CryptoSignalFramework()
         self.strategies = CryptoTradingStrategies()
@@ -37,17 +43,21 @@ class CryptoSignalIntegration:
         self.sentiment_generator = CryptoSentimentGenerator()
         
         # Initialize strategies
-        self._setup_strategies()
+        self._setup_strategies(selected_strategies)
         
         # Performance tracking
         self.performance_history = []
         self.signal_log = []
         
-    def _setup_strategies(self):
-        """Setup all trading strategies in the framework"""
+    def _setup_strategies(self, selected_strategies: List[str] = None):
+        """Setup trading strategies in the framework"""
         strategy_configs = self.strategies.get_strategy_configs()
         
         for config in strategy_configs:
+            # Only add selected strategies if specified
+            if selected_strategies and config.name not in selected_strategies:
+                continue
+                
             strategy_function = self.strategies.strategies[config.name]['function']
             self.framework.add_strategy(config, strategy_function)
             logger.info(f"Added strategy: {config.name}")
@@ -70,7 +80,7 @@ class CryptoSignalIntegration:
         
         return data
     
-    def generate_signals(self, symbols: List[str], days: int = 30) -> List[Dict]:
+    def generate_signals(self, symbols: List[str], days: int = 30, strategies: List[str] = None) -> List[Dict]:
         """Generate trading signals for specified symbols"""
         # Load data
         data = self.load_crypto_data(symbols, days)
@@ -79,30 +89,71 @@ class CryptoSignalIntegration:
             logger.error("No data available for signal generation")
             return []
         
-        # Generate signals
-        signals = self.framework.generate_signals(data)
+        # Generate signals for each symbol's historical data
+        all_signals = []
         
-        # Convert signals to dictionary format for easy handling
-        signal_dicts = []
-        for signal in signals:
-            signal_dict = {
-                'symbol': signal.strategy_name.split('_')[0] if '_' in signal.strategy_name else 'BTC',
-                'strategy': signal.strategy_name,
-                'signal_type': signal.signal_type.name,
-                'confidence': signal.confidence,
-                'entry_price': signal.entry_price,
-                'stop_loss': signal.stop_loss,
-                'take_profit': signal.take_profit,
-                'reason': signal.reason,
-                'timestamp': signal.timestamp.isoformat() if signal.timestamp else None,
-                'risk_size': signal.risk_size
-            }
-            signal_dicts.append(signal_dict)
+        for symbol, symbol_data in data.items():
+            logger.info(f"Generating signals for {symbol} with {len(symbol_data)} data points")
+            
+            # Filter strategies if specified
+            if strategies:
+                # Only process selected strategies for this symbol
+                symbol_strategies = [s for s in strategies if s.startswith(symbol.lower())]
+                if not symbol_strategies:
+                    continue
+            
+            # Generate signals for each historical timestamp
+            for i in range(50, len(symbol_data)):  # Check every data point
+                current_data = symbol_data.iloc[:i+1].copy()
+                
+                # Debug: Check if this is a NY session time
+                current_time = current_data.index[-1]
+                if hasattr(current_time, 'tz'):
+                    if current_time.tz is None:
+                        ny_time = current_time.tz_localize('UTC').tz_convert('America/New_York')
+                    else:
+                        ny_time = current_time.tz_convert('America/New_York')
+                else:
+                    ny_time = current_time
+                
+                hour = ny_time.hour
+                minute = ny_time.minute
+                current_minutes = hour * 60 + minute
+                ny_open_time = 9 * 60 + 30  # 9:30 AM
+                ny_close_time = 16 * 60    # 4:00 PM
+                
+                
+                
+                # Generate signals for this historical point
+                signals = self.framework.generate_signals({symbol: current_data})
+                
+                for signal in signals:
+                    if signal and signal.signal_type.name != 'FLAT':
+                        # Filter by selected strategies if specified
+                        if strategies and signal.strategy_name not in strategies:
+                            continue
+                        
+                            
+                        signal_dict = {
+                            'symbol': symbol,
+                            'strategy': signal.strategy_name,
+                            'signal_type': signal.signal_type.name,
+                            'confidence': signal.confidence,
+                            'entry_price': signal.entry_price,
+                            'stop_loss': signal.stop_loss,
+                            'take_profit': signal.take_profit,
+                            'reason': signal.reason,
+                            'timestamp': current_data.index[-1].isoformat() if hasattr(current_data.index[-1], 'isoformat') else str(current_data.index[-1]),
+                            'risk_size': signal.risk_size
+                        }
+                        all_signals.append(signal_dict)
+        
+        logger.info(f"Generated {len(all_signals)} total signals")
         
         # Log signals
-        self.signal_log.extend(signal_dicts)
+        self.signal_log.extend(all_signals)
         
-        return signal_dicts
+        return all_signals
     
     def backtest_signals(self, symbols: List[str], days: int = 90, initial_capital: float = 100000, step: int = 10) -> Dict:
         """Backtest the signal framework"""
