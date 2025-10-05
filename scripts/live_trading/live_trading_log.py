@@ -15,6 +15,7 @@ import os
 
 from crypto_signal_integration import CryptoSignalIntegration
 from crypto_analysis_engine import CryptoAnalysisEngine
+from data_ingestion.realtime_fusion_system import RealTimeFusionSystem
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -35,14 +36,17 @@ class Trade:
     trade_id: str = ""
 
 class LiveTradingLog:
-    def __init__(self, data_dir: str = "data", log_file: str = "live_trades.csv"):
+    def __init__(self, data_dir: str = "data", log_file: str = "live_trades.csv", api_keys: Dict = None):
         self.data_dir = Path(data_dir)
         self.log_file = self.data_dir / log_file
         self.portfolio_file = self.data_dir / "portfolio_state.json"
         
-        # Initialize signal integration
-        self.signal_integration = CryptoSignalIntegration()
+        # Initialize signal integration with test strategy only
+        self.signal_integration = CryptoSignalIntegration(selected_strategies=['btc_test_alternating'], api_keys=api_keys)
         self.analysis_engine = CryptoAnalysisEngine()
+        
+        # Initialize real-time fusion system
+        self.fusion_system = RealTimeFusionSystem(data_dir=self.data_dir, symbols=['BTC'])
         
         # Portfolio state
         self.portfolio_state = {
@@ -58,11 +62,31 @@ class LiveTradingLog:
         # Load existing portfolio state
         self._load_portfolio_state()
         
+        # Start real-time fusion system
+        self.fusion_system.start(self._on_signal_generated)
+        
         # Ensure data directory exists
         self.data_dir.mkdir(exist_ok=True)
         
         # Initialize log file if it doesn't exist
         self._initialize_log_file()
+    
+    def _on_signal_generated(self, symbol: str, signal: Dict):
+        """Callback for when fusion system generates a signal"""
+        try:
+            # Execute trade based on signal
+            trade = self._execute_trade(signal, signal['price'])
+            
+            # Log the trade
+            self._log_trade(trade)
+            
+            # Update portfolio state
+            self._save_portfolio_state()
+            
+            logger.info(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Signal: {trade.signal_type} @ ${trade.price:.2f} | PnL: ${trade.simulated_pnl:.2f}")
+            
+        except Exception as e:
+            logger.error(f"Error handling signal for {symbol}: {e}")
     
     def _initialize_log_file(self):
         """Initialize CSV log file with headers if it doesn't exist"""
@@ -114,26 +138,39 @@ class LiveTradingLog:
         # Generate trade ID
         trade_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{strategy}"
         
-        # Calculate position size for BUY signals
+        # Convert LONG/SHORT signals to BUY/SELL actions
+        trade_action = 'HOLD'
         position_size = 0.0
-        if signal_type == 'BUY' and self.portfolio_state["cash_balance"] > 0:
-            position_size = self._calculate_position_size(confidence, current_price)
-        
-        # Calculate simulated PnL
         simulated_pnl = 0.0
-        if signal_type == 'SELL' and self.portfolio_state["current_position"] > 0:
-            # Calculate profit/loss from current position
-            position_value = self.portfolio_state["current_position"] * current_price
-            cost_basis = self.portfolio_state["current_position"] * self.portfolio_state["last_trade_price"]
-            simulated_pnl = position_value - cost_basis
         
-        # Update portfolio state
-        if signal_type == 'BUY' and position_size > 0:
+        if signal_type == 'LONG':
+            if self.portfolio_state["current_position"] <= 0:  # Not currently long
+                trade_action = 'BUY'
+                position_size = self._calculate_position_size(confidence, current_price)
+            else:
+                trade_action = 'HOLD'  # Already long, just hold
+                
+        elif signal_type == 'SHORT':
+            # For testing: SHORT signals always execute SELL trades
+            trade_action = 'SELL'
+            if self.portfolio_state["current_position"] > 0:  # Currently long, need to sell
+                # Calculate profit/loss from current position
+                position_value = self.portfolio_state["current_position"] * current_price
+                cost_basis = self.portfolio_state["current_position"] * self.portfolio_state["last_trade_price"]
+                simulated_pnl = position_value - cost_basis
+                position_size = self.portfolio_state["current_position"]  # Sell all current position
+            else:
+                # If we're flat, just log the SELL signal (no actual position change)
+                position_size = 0.0
+        
+        # Update portfolio state based on trade action
+        if trade_action == 'BUY' and position_size > 0:
             cost = position_size * current_price
             self.portfolio_state["current_position"] += position_size
             self.portfolio_state["cash_balance"] -= cost
             self.portfolio_state["last_trade_price"] = current_price
-        elif signal_type == 'SELL' and self.portfolio_state["current_position"] > 0:
+            
+        elif trade_action == 'SELL' and self.portfolio_state["current_position"] > 0:
             proceeds = self.portfolio_state["current_position"] * current_price
             self.portfolio_state["cash_balance"] += proceeds
             self.portfolio_state["current_position"] = 0.0
@@ -151,7 +188,7 @@ class LiveTradingLog:
         trade = Trade(
             timestamp=datetime.now().isoformat(),
             symbol="BTC",
-            signal_type=signal_type,
+            signal_type=trade_action,  # Use the actual trade action
             price=current_price,
             confidence=confidence,
             reason=reason,
@@ -184,46 +221,12 @@ class LiveTradingLog:
             logger.error(f"Could not log trade: {e}")
     
     def generate_and_log_signals(self, days: int = 1) -> List[Trade]:
-        """Generate signals and log any trades"""
+        """Generate signals and log any trades using fusion system"""
         try:
-            # Generate signals
-            signals = self.signal_integration.generate_signals(["BTC"], days=days)
-            
-            if not signals:
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                logger.info(f"[{timestamp}] No signals generated - market conditions don't meet strategy criteria")
-                logger.info(f"[{timestamp}] This is normal - strategies only trade when specific conditions are met")
-                logger.info(f"[{timestamp}] Strategies are looking for:")
-                logger.info(f"[{timestamp}]   - Liquidity sweeps (Asia session)")
-                logger.info(f"[{timestamp}]   - Breakout continuations (high vol)")
-                logger.info(f"[{timestamp}]   - Mean reversion (low vol)")
-                logger.info(f"[{timestamp}]   - Volatility compression patterns")
-                return []
-            
-            # Get current BTC price
-            btc_data = self.analysis_engine.load_symbol_data("BTC", days=1)
-            if btc_data.empty:
-                logger.warning("No BTC price data available")
-                return []
-            
-            current_price = btc_data['close'].iloc[-1]
-            
-            trades = []
-            for signal_data in signals:
-                # Only execute trades if signal is different from last signal
-                signal_type = signal_data.get('signal_type', 'HOLD')
-                if signal_type != self.portfolio_state["last_signal"]:
-                    trade = self._execute_trade(signal_data, current_price)
-                    self._log_trade(trade)
-                    trades.append(trade)
-                else:
-                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    logger.info(f"[{timestamp}] Signal unchanged: {signal_type}")
-            
-            # Save updated portfolio state
-            self._save_portfolio_state()
-            
-            return trades
+            # The fusion system now handles signal generation automatically
+            # This method is kept for compatibility but signals are generated via callback
+            logger.info("Signal generation is now handled by the fusion system")
+            return []
         
         except Exception as e:
             logger.error(f"Error generating signals: {e}")

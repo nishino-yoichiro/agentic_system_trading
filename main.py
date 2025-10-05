@@ -26,7 +26,8 @@ def main():
     elif args.command == "dashboard":
         print("📊 Starting Dashboard")
         import subprocess
-        subprocess.run(["streamlit", "run", "scripts/dashboards/streamlit_app.py", "--server.port", "8501"])
+        import sys
+        subprocess.run([sys.executable, "-m", "streamlit", "run", "scripts/dashboards/streamlit_app.py", "--server.port", "8501"])
     
     elif args.command == "backtest":
         print("📈 Starting Backtest")

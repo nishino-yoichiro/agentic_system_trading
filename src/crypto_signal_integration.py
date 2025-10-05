@@ -21,6 +21,7 @@ import crypto_signal_framework
 import crypto_trading_strategies
 import crypto_analysis_engine
 import crypto_signal_generator
+from data_ingestion.unified_data_manager import UnifiedDataManager
 
 CryptoSignalFramework = crypto_signal_framework.CryptoSignalFramework
 StrategyConfig = crypto_signal_framework.StrategyConfig
@@ -35,12 +36,15 @@ class CryptoSignalIntegration:
     Main integration class that connects signal framework with crypto pipeline
     """
     
-    def __init__(self, data_dir: str = "data", selected_strategies: List[str] = None):
+    def __init__(self, data_dir: str = "data", selected_strategies: List[str] = None, api_keys: Dict = None):
         self.data_dir = Path(data_dir)
         self.framework = CryptoSignalFramework()
         self.strategies = CryptoTradingStrategies()
         self.analysis_engine = CryptoAnalysisEngine()
         self.sentiment_generator = CryptoSentimentGenerator()
+        
+        # Initialize unified data manager
+        self.data_manager = UnifiedDataManager(api_keys or {}, self.data_dir)
         
         # Initialize strategies
         self._setup_strategies(selected_strategies)
@@ -62,17 +66,17 @@ class CryptoSignalIntegration:
             self.framework.add_strategy(config, strategy_function)
             logger.info(f"Added strategy: {config.name}")
     
-    def load_crypto_data(self, symbols: List[str], days: int = 30) -> Dict[str, pd.DataFrame]:
-        """Load crypto data for signal generation"""
+    def load_crypto_data(self, symbols: List[str], days: int = 30, include_realtime: bool = True) -> Dict[str, pd.DataFrame]:
+        """Load crypto data for signal generation using unified data manager"""
         data = {}
         
         for symbol in symbols:
             try:
-                # Load data using existing analysis engine
-                df = self.analysis_engine.load_symbol_data(symbol, days=days)
+                # Use unified data manager for combined historical + real-time data
+                df = self.data_manager.get_combined_data(symbol, days=days, include_realtime=include_realtime)
                 if df is not None and len(df) > 50:
                     data[symbol] = df
-                    logger.info(f"Loaded {len(df)} data points for {symbol}")
+                    logger.info(f"Loaded {len(df)} data points for {symbol} (realtime: {include_realtime})")
                 else:
                     logger.warning(f"Insufficient data for {symbol}")
             except Exception as e:
@@ -89,7 +93,7 @@ class CryptoSignalIntegration:
             logger.error("No data available for signal generation")
             return []
         
-        # Generate signals for each symbol's historical data
+        # For live trading, only generate signals for the most recent data point
         all_signals = []
         
         for symbol, symbol_data in data.items():
@@ -102,51 +106,35 @@ class CryptoSignalIntegration:
                 if not symbol_strategies:
                     continue
             
-            # Generate signals for each historical timestamp
-            for i in range(50, len(symbol_data)):  # Check every data point
-                current_data = symbol_data.iloc[:i+1].copy()
-                
-                # Debug: Check if this is a NY session time
-                current_time = current_data.index[-1]
-                if hasattr(current_time, 'tz'):
-                    if current_time.tz is None:
-                        ny_time = current_time.tz_localize('UTC').tz_convert('America/New_York')
-                    else:
-                        ny_time = current_time.tz_convert('America/New_York')
-                else:
-                    ny_time = current_time
-                
-                hour = ny_time.hour
-                minute = ny_time.minute
-                current_minutes = hour * 60 + minute
-                ny_open_time = 9 * 60 + 30  # 9:30 AM
-                ny_close_time = 16 * 60    # 4:00 PM
-                
-                
-                
-                # Generate signals for this historical point
+            # Only use the most recent data point for live trading
+            current_data = symbol_data.tail(50).copy()  # Use last 50 points for context
+            
+            # Generate signals for the most recent data point only
+            try:
                 signals = self.framework.generate_signals({symbol: current_data})
-                
-                for signal in signals:
-                    if signal and signal.signal_type.name != 'FLAT':
-                        # Filter by selected strategies if specified
-                        if strategies and signal.strategy_name not in strategies:
-                            continue
-                        
-                            
-                        signal_dict = {
-                            'symbol': symbol,
-                            'strategy': signal.strategy_name,
-                            'signal_type': signal.signal_type.name,
-                            'confidence': signal.confidence,
-                            'entry_price': signal.entry_price,
-                            'stop_loss': signal.stop_loss,
-                            'take_profit': signal.take_profit,
-                            'reason': signal.reason,
-                            'timestamp': current_data.index[-1].isoformat() if hasattr(current_data.index[-1], 'isoformat') else str(current_data.index[-1]),
-                            'risk_size': signal.risk_size
-                        }
-                        all_signals.append(signal_dict)
+            except Exception as e:
+                logger.warning(f"Error generating signals for {symbol}: {e}")
+                continue
+            
+            for signal in signals:
+                if signal and signal.signal_type.name != 'FLAT':
+                    # Filter by selected strategies if specified
+                    if strategies and signal.strategy_name not in strategies:
+                        continue
+                    
+                    signal_dict = {
+                        'symbol': symbol,
+                        'strategy': signal.strategy_name,
+                        'signal_type': signal.signal_type.name,
+                        'confidence': signal.confidence,
+                        'entry_price': signal.entry_price,
+                        'stop_loss': signal.stop_loss,
+                        'take_profit': signal.take_profit,
+                        'reason': signal.reason,
+                        'timestamp': current_data.index[-1].isoformat() if hasattr(current_data.index[-1], 'isoformat') else str(current_data.index[-1]),
+                        'risk_size': signal.risk_size
+                    }
+                    all_signals.append(signal_dict)
         
         logger.info(f"Generated {len(all_signals)} total signals")
         

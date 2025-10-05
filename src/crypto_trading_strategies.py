@@ -133,6 +133,20 @@ class CryptoTradingStrategies:
             ),
             'function': self.btc_ny_session_trade
         }
+        
+        # 9. BTC Test Alternating Strategy
+        self.strategies['btc_test_alternating'] = {
+            'config': StrategyConfig(
+                name='btc_test_alternating',
+                symbol='BTC',
+                mechanism='test_alternating',
+                horizon='intraday',
+                session='all',
+                regime_filters=None,  # No regime filters for testing
+                min_confidence=0.5  # Lower confidence for testing
+            ),
+            'function': self.btc_test_alternating
+        }
     
     def btc_asia_liquidity_sweep(self, data: pd.DataFrame, regime: Dict[RegimeType, bool]) -> Optional[Signal]:
         """
@@ -651,22 +665,77 @@ class CryptoTradingStrategies:
         take_profit = None
         reason = ""
         
-        # Generate signals only at specific times (once per day)
-        # Buy at NY open (9:30 AM) - only at exact open time
-        if in_ny_session and current_minutes == ny_open_time:
+        # Simple NY session strategy: Buy at 9:30 AM, Sell at 4:30 PM
+        # Buy at exactly 9:30 AM ET
+        if hour == 9 and minute == 30:
             signal_type = SignalType.LONG
-            confidence = 0.70
-            stop_loss = entry_price * 0.98  # 2% stop loss
-            take_profit = entry_price * 1.03  # 3% take profit
+            confidence = 0.80
+            stop_loss = entry_price * 0.95  # 5% stop loss
+            take_profit = entry_price * 1.05  # 5% take profit
             reason = f"BTC NY open buy - {ny_time.strftime('%H:%M')} ET"
             
-        # Sell at NY close (4:00 PM) - only at exact close time
-        elif in_ny_session and current_minutes == ny_close_time:
+        # Sell at exactly 4:30 PM ET
+        elif hour == 16 and minute == 30:
             signal_type = SignalType.SHORT
-            confidence = 0.70
-            stop_loss = entry_price * 1.02  # 2% stop loss
-            take_profit = entry_price * 0.97  # 3% take profit
+            confidence = 0.80
+            stop_loss = entry_price * 1.05  # 5% stop loss
+            take_profit = entry_price * 0.95  # 5% take profit
             reason = f"BTC NY close sell - {ny_time.strftime('%H:%M')} ET"
+        
+        if signal_type != SignalType.FLAT:
+            return Signal(
+                signal_type=signal_type,
+                confidence=confidence,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                reason=reason
+            )
+        
+        return None
+    
+    def btc_test_alternating(self, data: pd.DataFrame, regime: Dict[RegimeType, bool]) -> Optional[Signal]:
+        """
+        BTC Test Alternating Strategy
+        
+        Principle: Simple alternating buy/sell signals for testing continuous trading
+        - Generates BUY signal on odd minutes (1, 3, 5, etc.)
+        - Generates SELL signal on even minutes (2, 4, 6, etc.)
+        - Used for testing live continuous trading functionality
+        """
+        if len(data) < 1:
+            return None
+        
+        # Use current system time instead of data timestamp for live trading
+        from datetime import datetime
+        current_time = datetime.now()
+        minute = current_time.minute
+        
+        current_close = data['close'].iloc[-1]
+        
+        confidence = 0.0
+        signal_type = SignalType.FLAT
+        entry_price = current_close
+        stop_loss = None
+        take_profit = None
+        reason = ""
+        
+        # Generate alternating signals based on minute - ALWAYS generate a signal for testing
+        print(f"DEBUG: Current minute = {minute}, minute % 2 = {minute % 2}")
+        
+        if minute % 2 == 1:  # Odd minutes - LONG
+            signal_type = SignalType.LONG
+            confidence = 0.6
+            stop_loss = entry_price * 0.98  # 2% stop loss
+            take_profit = entry_price * 1.02  # 2% take profit
+            reason = f"Test alternating LONG signal - minute {minute}"
+            
+        elif minute % 2 == 0:  # Even minutes - SHORT
+            signal_type = SignalType.SHORT
+            confidence = 0.6
+            stop_loss = entry_price * 1.02  # 2% stop loss
+            take_profit = entry_price * 0.98  # 2% take profit
+            reason = f"Test alternating SHORT signal - minute {minute}"
         
         if signal_type != SignalType.FLAT:
             return Signal(

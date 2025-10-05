@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from .incremental_collector import IncrementalDataCollector, DataType, RefreshStrategy
 from .crypto_collector import CryptoDataCollector
+from .realtime_price_collector import RealtimePriceCollector
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ class ContinuousDataCollector:
         self.symbols = symbols
         self.collector = IncrementalDataCollector(data_dir, api_keys)
         self.crypto_collector = CryptoDataCollector(api_keys)
+        self.realtime_collector = RealtimePriceCollector()
         
         # Stats and control
         self.stats = CollectionStats(start_time=datetime.now())
@@ -129,17 +131,48 @@ class ContinuousDataCollector:
                 'api_calls_made': 0
             }
             
-            # Collect crypto data using Coinbase Advanced API
+            # Collect crypto data using hybrid approach
             if crypto_symbols:
-                logger.info(f"Collecting crypto data for {crypto_symbols} using Coinbase Advanced API")
-                crypto_result = await self.crypto_collector.collect_crypto_data(
-                    symbols=crypto_symbols,
-                    days_back=1  # Only 1 day for incremental updates
-                )
-                if crypto_result:
-                    results['price_updates'].update(crypto_result)
-                    results['api_calls_made'] += len(crypto_symbols)
-                    self._record_api_call('coinbase')
+                logger.info(f"Collecting crypto data for {crypto_symbols} using hybrid approach")
+                try:
+                    # First, try to get historical data with proper OHLCV
+                    crypto_result = await self.crypto_collector.collect_crypto_data(
+                        symbols=crypto_symbols,
+                        days_back=1
+                    )
+                    if crypto_result:
+                        results['price_updates'].update(crypto_result)
+                        results['api_calls_made'] += len(crypto_symbols)
+                        self._record_api_call('coinbase')
+                        logger.info(f"Updated {len(crypto_result)} crypto symbols with historical data")
+                    
+                    # Then, supplement with real-time price updates for current minute
+                    try:
+                        realtime_result = self.realtime_collector.collect_and_save_prices(
+                            symbols=crypto_symbols,
+                            data_dir=self.data_dir
+                        )
+                        if realtime_result:
+                            logger.info(f"Supplemented with real-time prices for {len(realtime_result)} symbols")
+                    except Exception as e:
+                        logger.warning(f"Could not supplement with real-time data: {e}")
+                        
+                except Exception as e:
+                    logger.error(f"Error collecting crypto data: {e}")
+                    # Fallback to real-time only if historical fails
+                    try:
+                        realtime_result = self.realtime_collector.collect_and_save_prices(
+                            symbols=crypto_symbols,
+                            data_dir=self.data_dir
+                        )
+                        if realtime_result:
+                            price_updates = {symbol: data['price'] for symbol, data in realtime_result.items()}
+                            results['price_updates'].update(price_updates)
+                            results['api_calls_made'] += len(crypto_symbols)
+                            self._record_api_call('coinbase')
+                            logger.info(f"Fallback: Updated {len(realtime_result)} crypto symbols with real-time prices only")
+                    except Exception as e2:
+                        logger.error(f"Both historical and real-time collection failed: {e2}")
             
             # Collect stock data using existing method
             if stock_symbols:

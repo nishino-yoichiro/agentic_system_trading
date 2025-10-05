@@ -348,17 +348,24 @@ class MultiSymbolBacktester:
                                 use_sentiment: bool = False, verbose: bool = False, strategies: List[str] = None) -> Dict[str, BacktestResult]:
         """Backtest multiple symbols individually"""
         results = {}
+        total_symbols = len(symbols)
         
-        for symbol in symbols:
+        print(f"Starting backtest for {total_symbols} symbols...")
+        
+        for i, symbol in enumerate(symbols):
             if symbol.upper() not in self.available_symbols:
                 logger.warning(f"Symbol {symbol} not available. Available: {self.available_symbols}")
                 continue
             
+            print(f"[{i+1}/{total_symbols}] Backtesting {symbol}...")
+            
             try:
                 result = self.backtest_symbol(symbol, days, use_sentiment, verbose, strategies)
                 results[symbol] = result
+                print(f"[OK] {symbol}: {result.total_return:.2%} return, {result.total_trades} trades")
                 logger.info(f"Completed backtest for {symbol}: {result.total_return:.2%} return")
             except Exception as e:
+                print(f"[ERROR] {symbol}: Error - {e}")
                 logger.error(f"Exception in backtest_symbol for {symbol}: {e}")
                 # Create a dummy result to continue
                 from dataclasses import dataclass
@@ -377,6 +384,7 @@ class MultiSymbolBacktester:
                 results[symbol] = DummyResult()
                 continue
         
+        print(f"Backtest completed for {len(results)} symbols")
         return results
     
     def backtest_portfolio(self, symbols: List[str], days: int = 3, 

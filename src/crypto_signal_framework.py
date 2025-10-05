@@ -107,21 +107,37 @@ class CryptoSignalFramework:
         if len(data) < 50:
             return {regime: False for regime in RegimeType}
         
-        # Calculate regime indicators
+        # Calculate regime indicators (optimized for large datasets)
         returns = data['close'].pct_change().dropna()
-        volatility = returns.rolling(20).std().iloc[-1]
-        vol_percentile = (returns.rolling(20).std().rank(pct=True)).iloc[-1]
         
-        # Trend detection using ADX
-        high = data['high']
-        low = data['low']
-        close = data['close']
+        # Use only recent data for regime detection to avoid hanging
+        recent_data = data.tail(100)  # Only use last 100 data points for regime detection
+        recent_returns = recent_data['close'].pct_change().dropna()
         
-        # Simple trend detection
-        sma_20 = close.rolling(20).mean()
-        sma_50 = close.rolling(50).mean()
-        price_vs_sma20 = close.iloc[-1] / sma_20.iloc[-1]
-        price_vs_sma50 = close.iloc[-1] / sma_50.iloc[-1]
+        if len(recent_returns) < 20:
+            volatility = 0.0
+            vol_percentile = 0.5
+        else:
+            volatility = recent_returns.rolling(20).std().iloc[-1]
+            vol_percentile = (recent_returns.rolling(20).std().rank(pct=True)).iloc[-1]
+        
+        # Trend detection using recent data only
+        high = recent_data['high']
+        low = recent_data['low']
+        close = recent_data['close']
+        
+        # Simple trend detection (optimized)
+        if len(close) >= 20:
+            sma_20 = close.rolling(20).mean().iloc[-1]
+            price_vs_sma20 = close.iloc[-1] / sma_20
+        else:
+            price_vs_sma20 = 1.0
+            
+        if len(close) >= 50:
+            sma_50 = close.rolling(50).mean().iloc[-1]
+            price_vs_sma50 = close.iloc[-1] / sma_50
+        else:
+            price_vs_sma50 = 1.0
         
         # Session detection using data timestamp (not current time)
         data_timestamp = data.index[-1]

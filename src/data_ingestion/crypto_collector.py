@@ -152,10 +152,19 @@ class CryptoDataCollector:
                         gaps.append((max(gap_start, start_time), min(gap_end, end_time)))
             
             # Check for gap at the end (most recent data)
-            if existing_df.index.max() < end_time:
+            # Always fetch data if the latest data is more than 5 minutes old
+            latest_data_time = existing_df.index.max()
+            current_time = datetime.now(tz=latest_data_time.tzinfo if latest_data_time.tzinfo else None)
+            minutes_behind = (current_time - latest_data_time).total_seconds() / 60
+            
+            if existing_df.index.max() < end_time or minutes_behind > 5:
                 gap_start = existing_df.index.max() + timedelta(minutes=1)
                 if gap_start < end_time:
                     gaps.append((gap_start, end_time))
+                elif minutes_behind > 5:
+                    # Force a recent data fetch if data is stale
+                    recent_start = current_time - timedelta(minutes=10)  # Get last 10 minutes
+                    gaps.append((recent_start, current_time))
             
             # Check for gap at the beginning (oldest data)
             if existing_df.index.min() > start_time:
