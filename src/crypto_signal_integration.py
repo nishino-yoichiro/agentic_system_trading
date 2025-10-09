@@ -17,11 +17,10 @@ from pathlib import Path
 import json
 from datetime import datetime, timedelta
 
-import crypto_signal_framework
-import crypto_trading_strategies
-import crypto_analysis_engine
-import crypto_signal_generator
-from data_ingestion.unified_data_manager import UnifiedDataManager
+from . import crypto_signal_framework
+from . import crypto_trading_strategies
+from . import crypto_analysis_engine
+from . import crypto_signal_generator
 
 CryptoSignalFramework = crypto_signal_framework.CryptoSignalFramework
 StrategyConfig = crypto_signal_framework.StrategyConfig
@@ -36,15 +35,12 @@ class CryptoSignalIntegration:
     Main integration class that connects signal framework with crypto pipeline
     """
     
-    def __init__(self, data_dir: str = "data", selected_strategies: List[str] = None, api_keys: Dict = None):
+    def __init__(self, data_dir: str = "data", selected_strategies: List[str] = None):
         self.data_dir = Path(data_dir)
         self.framework = CryptoSignalFramework()
         self.strategies = CryptoTradingStrategies()
         self.analysis_engine = CryptoAnalysisEngine()
         self.sentiment_generator = CryptoSentimentGenerator()
-        
-        # Initialize unified data manager
-        self.data_manager = UnifiedDataManager(api_keys or {}, self.data_dir)
         
         # Initialize strategies
         self._setup_strategies(selected_strategies)
@@ -66,17 +62,17 @@ class CryptoSignalIntegration:
             self.framework.add_strategy(config, strategy_function)
             logger.info(f"Added strategy: {config.name}")
     
-    def load_crypto_data(self, symbols: List[str], days: int = 30, include_realtime: bool = True) -> Dict[str, pd.DataFrame]:
-        """Load crypto data for signal generation using unified data manager"""
+    def load_crypto_data(self, symbols: List[str], days: int = 1095) -> Dict[str, pd.DataFrame]:
+        """Load crypto data for signal generation (default: 3 years)"""
         data = {}
         
         for symbol in symbols:
             try:
-                # Use unified data manager for combined historical + real-time data
-                df = self.data_manager.get_combined_data(symbol, days=days, include_realtime=include_realtime)
+                # Load data using existing analysis engine
+                df = self.analysis_engine.load_symbol_data(symbol, days=days)
                 if df is not None and len(df) > 50:
                     data[symbol] = df
-                    logger.info(f"Loaded {len(df)} data points for {symbol} (realtime: {include_realtime})")
+                    logger.info(f"Loaded {len(df)} data points for {symbol} ({days} days)")
                 else:
                     logger.warning(f"Insufficient data for {symbol}")
             except Exception as e:
@@ -84,7 +80,7 @@ class CryptoSignalIntegration:
         
         return data
     
-    def generate_signals(self, symbols: List[str], days: int = 30, strategies: List[str] = None) -> List[Dict]:
+    def generate_signals(self, symbols: List[str], days: int = 1095, strategies: List[str] = None) -> List[Dict]:
         """Generate trading signals for specified symbols"""
         # Load data
         data = self.load_crypto_data(symbols, days)
@@ -93,7 +89,7 @@ class CryptoSignalIntegration:
             logger.error("No data available for signal generation")
             return []
         
-        # For live trading, only generate signals for the most recent data point
+        # Generate signals for each symbol's historical data
         all_signals = []
         
         for symbol, symbol_data in data.items():
@@ -106,16 +102,17 @@ class CryptoSignalIntegration:
                 if not symbol_strategies:
                     continue
             
-            # Only use the most recent data point for live trading
-            current_data = symbol_data.tail(50).copy()  # Use last 50 points for context
+            # Generate signals for the entire dataset at once (vectorized)
+            logger.info(f"Processing {symbol} with {len(symbol_data)} data points")
             
-            # Generate signals for the most recent data point only
+            # Generate signals for the entire dataset
             try:
-                signals = self.framework.generate_signals({symbol: current_data})
+                signals = self.framework.generate_signals({symbol: symbol_data})
             except Exception as e:
                 logger.warning(f"Error generating signals for {symbol}: {e}")
                 continue
             
+            # Process the generated signals
             for signal in signals:
                 if signal and signal.signal_type.name != 'FLAT':
                     # Filter by selected strategies if specified
@@ -131,7 +128,7 @@ class CryptoSignalIntegration:
                         'stop_loss': signal.stop_loss,
                         'take_profit': signal.take_profit,
                         'reason': signal.reason,
-                        'timestamp': current_data.index[-1].isoformat() if hasattr(current_data.index[-1], 'isoformat') else str(current_data.index[-1]),
+                        'timestamp': symbol_data.index[-1].isoformat() if hasattr(symbol_data.index[-1], 'isoformat') else str(symbol_data.index[-1]),
                         'risk_size': signal.risk_size
                     }
                     all_signals.append(signal_dict)
@@ -336,7 +333,7 @@ class CryptoSignalIntegration:
     
     def get_live_signals(self, symbols: List[str]) -> Dict:
         """Get current live signals for dashboard"""
-        signals = self.generate_signals(symbols, days=7)  # Use last 7 days for context
+        signals = self.generate_signals(symbols, days=30)  # Use last 30 days for context
         
         # Group signals by symbol
         symbol_signals = {}

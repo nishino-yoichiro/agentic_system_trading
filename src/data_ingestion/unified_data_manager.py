@@ -13,7 +13,7 @@ from pathlib import Path
 import asyncio
 
 from .crypto_collector import CryptoDataCollector
-from .realtime_price_collector import RealtimePriceCollector
+from .websocket_price_feed import WebSocketPriceFeed
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class UnifiedDataManager:
         
         # Initialize collectors
         self.historical_collector = CryptoDataCollector(api_keys)
-        self.realtime_collector = RealtimePriceCollector()
+        self.realtime_collector = WebSocketPriceFeed()
         
         # Cache for recent data to avoid repeated API calls
         self._data_cache = {}

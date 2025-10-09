@@ -15,7 +15,7 @@ Date: 2025-09-28
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Optional
-from .crypto_signal_framework import Signal, SignalType, RegimeType, StrategyConfig
+from crypto_signal_framework import Signal, SignalType, RegimeType, StrategyConfig
 import logging
 
 logger = logging.getLogger(__name__)
@@ -84,9 +84,6 @@ class CryptoTradingStrategies:
             ),
             'function': self.volatility_expansion_breakout
         }
-        
-        # 5. Test Alternating Strategy (simple test strategy)
-        
     
     def liquidity_sweep_reversal(self, data: pd.DataFrame, regime: Dict[RegimeType, bool]) -> Optional[Signal]:
         """
@@ -389,10 +386,18 @@ class CryptoTradingStrategies:
         if len(data) < 1:
             return None
         
-        # Get current time (already in UTC)
+        # Get current time in NY timezone
         current_time = data.index[-1]
-        hour = current_time.hour
-        minute = current_time.minute
+        if hasattr(current_time, 'tz'):
+            if current_time.tz is None:
+                ny_time = current_time.tz_localize('UTC').tz_convert('America/New_York')
+            else:
+                ny_time = current_time.tz_convert('America/New_York')
+        else:
+            ny_time = current_time
+        
+        hour = ny_time.hour
+        minute = ny_time.minute
         
         # NY session times (ET)
         ny_open_time = 9 * 60 + 30  # 9:30 AM in minutes
@@ -418,25 +423,22 @@ class CryptoTradingStrategies:
         take_profit = None
         reason = ""
         
-        # NY session strategy: Buy in morning, sell in afternoon (UTC-based)
-        # 9:30 AM ET = 14:30 UTC (during DST) or 13:30 UTC (during ST)
-        # 4:30 PM ET = 21:30 UTC (during DST) or 20:30 UTC (during ST)
-        
-        # Buy at 14:30 UTC (9:30 AM ET during DST)
-        if hour == 14 and minute == 30:
+        # Simple NY session strategy: Buy at 9:30 AM ET, Sell at 4:30 PM ET
+        # Buy at exactly 9:30 AM ET
+        if hour == 9 and minute == 30:
             signal_type = SignalType.LONG
             confidence = 0.80
             stop_loss = entry_price * 0.95  # 5% stop loss
             take_profit = entry_price * 1.05  # 5% take profit
-            reason = f"BTC NY session buy - {current_time.strftime('%H:%M')} UTC"
+            reason = f"BTC NY open buy - {ny_time.strftime('%H:%M')} ET"
             
-        # Sell at 21:30 UTC (4:30 PM ET during DST)
-        elif hour == 21 and minute == 30:
+        # Sell at exactly 4:30 PM ET
+        elif hour == 16 and minute == 30:
             signal_type = SignalType.SHORT
             confidence = 0.80
             stop_loss = entry_price * 1.05  # 5% stop loss
             take_profit = entry_price * 0.95  # 5% take profit
-            reason = f"BTC NY session sell - {current_time.strftime('%H:%M')} UTC"
+            reason = f"BTC NY close sell - {ny_time.strftime('%H:%M')} ET"
         
         if signal_type != SignalType.FLAT:
             return Signal(

@@ -27,7 +27,7 @@ class BTCProfessionalReport:
         logger.info("Generating professional BTC analysis report...")
         
         # Load real data
-        df = self.analysis_engine.load_real_btc_data(days=7)  # Last 7 days
+        df = self.analysis_engine.load_symbol_data('BTC', days=30)  # Last 30 days
         
         if df.empty:
             logger.error("No BTC data available")

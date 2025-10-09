@@ -9,9 +9,10 @@ import websockets
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Dict, Callable, Optional
+from typing import Dict, Callable, Optional, List
 import threading
 import time
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,38 @@ class WebSocketPriceFeed:
     def get_all_prices(self) -> Dict[str, Dict]:
         """Get all latest prices"""
         return self.latest_prices.copy()
+    
+    def collect_and_save_prices(self, symbols: List[str], data_dir: Path) -> Dict[str, Dict]:
+        """Collect and save real-time prices (compatibility method)"""
+        try:
+            results = {}
+            for symbol in symbols:
+                if symbol in self.latest_prices:
+                    results[symbol] = self.latest_prices[symbol]
+                else:
+                    # Fallback to spot price if not in WebSocket data
+                    results[symbol] = self.get_spot_price(f"{symbol}-USD")
+            return results
+        except Exception as e:
+            logger.error(f"Error collecting real-time prices: {e}")
+            return {}
+    
+    def get_spot_price(self, currency_pair: str) -> Optional[Dict]:
+        """Get current spot price for a currency pair"""
+        try:
+            import requests
+            response = requests.get(f"https://api.coinbase.com/v2/prices/{currency_pair}/spot")
+            if response.status_code == 200:
+                data = response.json()
+                return {
+                    'price': float(data['data']['amount']),
+                    'timestamp': datetime.now(timezone.utc),
+                    'currency': currency_pair
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Error getting spot price for {currency_pair}: {e}")
+            return None
 
 def main():
     """Test WebSocket feed"""
@@ -133,3 +166,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

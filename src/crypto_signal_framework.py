@@ -279,7 +279,7 @@ class CryptoSignalFramework:
         return weights
     
     def generate_signals(self, data: Dict[str, pd.DataFrame]) -> List[Signal]:
-        """Generate signals for all strategies"""
+        """Generate signals for all strategies by iterating through each timestamp"""
         all_signals = []
         
         # Calculate allocation weights
@@ -301,33 +301,38 @@ class CryptoSignalFramework:
             if len(symbol_data) < 50:  # Need minimum data
                 continue
             
-            # Detect regime
-            regime = self.detect_regime(symbol_data, symbol)
-            
-            # Check regime filters
-            if config.regime_filters:
-                regime_ok = any(regime[filter_regime] for filter_regime in config.regime_filters)
-                if not regime_ok:
+            # Iterate through each timestamp to generate signals
+            for i in range(50, len(symbol_data)):  # Start from index 50 to have enough history
+                # Get data up to current timestamp
+                current_data = symbol_data.iloc[:i+1].copy()
+                
+                # Detect regime for current data
+                regime = self.detect_regime(current_data, symbol)
+                
+                # Check regime filters
+                if config.regime_filters:
+                    regime_ok = any(regime[filter_regime] for filter_regime in config.regime_filters)
+                    if not regime_ok:
+                        continue
+                
+                # Generate signal for current timestamp
+                try:
+                    signal = strategy['function'](current_data, regime)
+                    if signal and signal.confidence >= config.min_confidence:
+                        # Apply volatility targeting
+                        returns = current_data['close'].pct_change().dropna()
+                        vol_multiplier = self.calculate_volatility_targeting(returns, config.vol_target)
+                        
+                        # Set risk size based on allocation weight
+                        signal.risk_size = weights.get(name, 0.0) * vol_multiplier
+                        signal.strategy_name = name
+                        signal.timestamp = current_data.index[-1]
+                        
+                        all_signals.append(signal)
+                        
+                except Exception as e:
+                    logger.error(f"Error generating signal for {name} at timestamp {current_data.index[-1]}: {e}")
                     continue
-            
-            # Generate signal
-            try:
-                signal = strategy['function'](symbol_data, regime)
-                if signal and signal.confidence >= config.min_confidence:
-                    # Apply volatility targeting
-                    returns = symbol_data['close'].pct_change().dropna()
-                    vol_multiplier = self.calculate_volatility_targeting(returns, config.vol_target)
-                    
-                    # Set risk size based on allocation weight
-                    signal.risk_size = weights.get(name, 0.0) * vol_multiplier
-                    signal.strategy_name = name
-                    signal.timestamp = symbol_data.index[-1]
-                    
-                    all_signals.append(signal)
-                    
-            except Exception as e:
-                logger.error(f"Error generating signal for {name}: {e}")
-                continue
         
         # Apply execution controls (temporarily disabled for testing)
         filtered_signals = all_signals  # self.apply_execution_controls(all_signals)

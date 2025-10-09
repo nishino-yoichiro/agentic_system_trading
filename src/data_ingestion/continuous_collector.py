@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 from .incremental_collector import IncrementalDataCollector, DataType, RefreshStrategy
 from .crypto_collector import CryptoDataCollector
-from .realtime_price_collector import RealtimePriceCollector
+from .websocket_price_feed import WebSocketPriceFeed
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +53,12 @@ class ContinuousDataCollector:
         self.symbols = symbols
         self.collector = IncrementalDataCollector(data_dir, api_keys)
         self.crypto_collector = CryptoDataCollector(api_keys)
-        self.realtime_collector = RealtimePriceCollector()
+        self.realtime_collector = WebSocketPriceFeed()
         
         # Stats and control
         self.stats = CollectionStats(start_time=datetime.now())
         self.running = False
-        self.interval_seconds = 20
+        self.interval_seconds = 300  # 5 minutes instead of 20 seconds
         
         # Rate limiting
         self.api_limits = {

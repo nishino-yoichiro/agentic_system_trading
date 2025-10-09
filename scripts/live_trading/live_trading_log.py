@@ -41,12 +41,18 @@ class LiveTradingLog:
         self.log_file = self.data_dir / log_file
         self.portfolio_file = self.data_dir / "portfolio_state.json"
         
-        # Initialize signal integration with test strategy only
-        self.signal_integration = CryptoSignalIntegration(selected_strategies=['btc_test_alternating'], api_keys=api_keys)
-        self.analysis_engine = CryptoAnalysisEngine()
+        # Initialize signal integration with available strategies
+        from src.crypto_trading_strategies import CryptoTradingStrategies
+        strategies = CryptoTradingStrategies()
+        available_strategies = list(strategies.strategies.keys())
+        print(f"Available strategies for live trading: {', '.join(available_strategies)}")
         
-        # Initialize real-time fusion system
-        self.fusion_system = RealTimeFusionSystem(data_dir=self.data_dir, symbols=['BTC'])
+        # Use first two strategies by default
+        selected_strategies = available_strategies[:2] if len(available_strategies) >= 2 else available_strategies
+        print(f"Using strategies: {', '.join(selected_strategies)}")
+        
+        self.signal_integration = CryptoSignalIntegration(selected_strategies=selected_strategies)
+        self.analysis_engine = CryptoAnalysisEngine()
         
         # Portfolio state
         self.portfolio_state = {
@@ -62,7 +68,10 @@ class LiveTradingLog:
         # Load existing portfolio state
         self._load_portfolio_state()
         
-        # Start real-time fusion system
+        # Initialize real-time fusion system (for signal generation only)
+        self.fusion_system = RealTimeFusionSystem(data_dir=self.data_dir, symbols=['BTC'])
+        
+        # Start real-time fusion system (this will only generate signals, not collect data)
         self.fusion_system.start(self._on_signal_generated)
         
         # Ensure data directory exists

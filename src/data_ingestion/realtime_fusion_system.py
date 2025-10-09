@@ -87,29 +87,24 @@ class RealTimeFusionSystem:
         
         # Callbacks
         self.signal_callback = None
-        self.update_interval = 60  # Generate signals every minute
+        self.update_interval = 300  # Generate signals every 5 minutes (less frequent)
         
     def start(self, signal_callback: Callable = None):
-        """Start the fusion system"""
+        """Start the fusion system (signal generation only)"""
         if self.running:
             return
         
         self.signal_callback = signal_callback
         self.running = True
         
-        # Load historical data
+        # Load historical data (no WebSocket collection)
         self._load_historical_data()
         
-        # Start WebSocket feed
-        ws_symbols = [f"{s}-USD" for s in self.symbols]
-        self.ws_feed = WebSocketPriceFeed(ws_symbols, self._on_price_update)
-        self.ws_feed.start()
-        
-        # Start signal generation loop
+        # Start signal generation loop (no WebSocket feed)
         self.signal_thread = threading.Thread(target=self._signal_loop, daemon=True)
         self.signal_thread.start()
         
-        logger.info("Started Real-Time Fusion System")
+        logger.info("Started Real-Time Fusion System (signal generation only)")
     
     def stop(self):
         """Stop the fusion system"""
@@ -126,8 +121,11 @@ class RealTimeFusionSystem:
                 if file_path.exists():
                     df = pd.read_parquet(file_path)
                     df.index = pd.to_datetime(df.index)
+                    # Only keep last 7 days to prevent excessive memory usage
+                    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+                    df = df[df.index >= cutoff]
                     self.historical_data[timeframe][symbol] = df
-                    logger.info(f"Loaded {len(df)} {timeframe} candles for {symbol}")
+                    logger.info(f"Loaded {len(df)} {timeframe} candles for {symbol} (last 7 days)")
                 else:
                     # Create empty DataFrame
                     self.historical_data[timeframe][symbol] = pd.DataFrame()
@@ -197,10 +195,8 @@ class RealTimeFusionSystem:
         """Main signal generation loop"""
         while self.running:
             try:
-                # Wait until the next minute boundary
-                now = datetime.now()
-                seconds_until_next_minute = 60 - now.second
-                time.sleep(seconds_until_next_minute)
+                # Wait for the update interval (5 minutes)
+                time.sleep(self.update_interval)
                 
                 # Generate signals for all symbols
                 for symbol in self.symbols:
@@ -208,17 +204,17 @@ class RealTimeFusionSystem:
                 
             except Exception as e:
                 logger.error(f"Error in signal loop: {e}")
-                time.sleep(5)
+                time.sleep(60)  # Wait 1 minute on error
     
     def _generate_signal(self, symbol: str):
         """Generate signal for a symbol"""
         try:
-            # Check if we already generated a signal for this minute
+            # Check if we already generated a signal recently (within 5 minutes)
             current_time = datetime.now()
-            current_minute = current_time.replace(second=0, microsecond=0)
+            current_interval = current_time.replace(second=0, microsecond=0, minute=(current_time.minute // 5) * 5)
             
-            if symbol in self.last_signal_time and self.last_signal_time[symbol] == current_minute:
-                logger.debug(f"Signal already generated for {symbol} this minute")
+            if symbol in self.last_signal_time and self.last_signal_time[symbol] == current_interval:
+                logger.debug(f"Signal already generated for {symbol} this interval")
                 return
             
             # Get multi-timeframe context
@@ -232,7 +228,7 @@ class RealTimeFusionSystem:
             
             # Call signal callback if provided
             if self.signal_callback and signal:
-                self.last_signal_time[symbol] = current_minute
+                self.last_signal_time[symbol] = current_interval
                 self.signal_callback(symbol, signal)
                 
         except Exception as e:
@@ -249,42 +245,42 @@ class RealTimeFusionSystem:
                 if not df.empty:
                     context[timeframe] = df.tail(50)  # Last 50 candles
         
-        # Add current pseudo-candle if available
-        if symbol in self.pseudo_candles:
-            pseudo_candle = self.pseudo_candles[symbol]
-            context['current'] = pseudo_candle.to_dataframe()
-        
-        # Add latest price
-        if symbol in self.latest_prices:
-            context['latest_price'] = self.latest_prices[symbol]
+        # Add latest price from historical data
+        if symbol in self.historical_data['1m'] and not self.historical_data['1m'][symbol].empty:
+            latest_data = self.historical_data['1m'][symbol].iloc[-1]
+            context['latest_price'] = {
+                'price': latest_data['close'],
+                'timestamp': self.historical_data['1m'][symbol].index[-1]
+            }
         
         return context
     
     def _create_signal(self, symbol: str, context: Dict) -> Optional[Dict]:
         """Create trading signal based on context"""
         try:
-            # Simple alternating strategy for testing
+            # Simple alternating strategy for testing (every 5 minutes)
             current_time = datetime.now()
-            minute = current_time.minute
+            interval = current_time.minute // 5  # 5-minute intervals
             
             # Determine signal type
-            if minute % 2 == 1:  # Odd minutes - LONG
+            if interval % 2 == 1:  # Odd intervals - LONG
                 signal_type = 'LONG'
                 confidence = 0.6
-                reason = f"Test alternating LONG signal - minute {minute}"
-            else:  # Even minutes - SHORT
+                reason = f"Test alternating LONG signal - interval {interval}"
+            else:  # Even intervals - SHORT
                 signal_type = 'SHORT'
                 confidence = 0.6
-                reason = f"Test alternating SHORT signal - minute {minute}"
+                reason = f"Test alternating SHORT signal - interval {interval}"
             
-            logger.info(f"DEBUG: Generated signal for {symbol}: {signal_type} at minute {minute}")
+            logger.info(f"DEBUG: Generated signal for {symbol}: {signal_type} at interval {interval}")
             
-            # Get current price
+            # Get current price from historical data
             if 'latest_price' in context:
                 current_price = context['latest_price']['price']
-            elif 'current' in context:
-                current_price = context['current']['close'].iloc[-1]
+            elif '1m' in context and not context['1m'].empty:
+                current_price = context['1m']['close'].iloc[-1]
             else:
+                logger.warning(f"No price data available for {symbol}")
                 return None
             
             return {

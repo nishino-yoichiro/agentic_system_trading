@@ -16,7 +16,8 @@ import pandas as pd
 import numpy as np
 
 # Add project root to path
-sys.path.append(str(Path(__file__).parent))
+sys.path.append(str(Path(__file__).parent.parent / "src"))
+sys.path.append(str(Path(__file__).parent.parent))
 
 from data_ingestion.incremental_collector import IncrementalDataCollector, DataType, RefreshStrategy
 from data_ingestion.continuous_collector import ContinuousDataCollector

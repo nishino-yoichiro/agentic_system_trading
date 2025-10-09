@@ -36,12 +36,10 @@ def main():
         print(f"Available: {', '.join(available_symbols)}")
         return
     
-    # Get strategy selection
-    available_strategies = [
-        'btc_asia_sweep', 'eth_breakout_continuation', 'btc_mean_reversion',
-        'eth_funding_arb', 'btc_vol_compression', 'eth_basis_trade',
-        'btc_ny_open_london_sweep', 'btc_ny_session'
-    ]
+    # Get strategy selection - dynamically load from strategies
+    from crypto_trading_strategies import CryptoTradingStrategies
+    strategies_obj = CryptoTradingStrategies()
+    available_strategies = list(strategies_obj.strategies.keys())
     
     print(f"Available strategies: {', '.join(available_strategies)}")
     strategies_input = input("Enter strategies to use (space-separated, default: all): ").strip()
@@ -57,8 +55,8 @@ def main():
         strategies = available_strategies  # Default to all strategies
     
     # Get other parameters
-    days = input("Days to backtest (default 3): ").strip()
-    days = int(days) if days.isdigit() else 3
+    days = input("Days to backtest (default 30): ").strip()
+    days = int(days) if days.isdigit() else 30
     
     capital = input("Initial capital (default 10000): ").strip()
     capital = float(capital) if capital.replace('.', '').isdigit() else 10000.0

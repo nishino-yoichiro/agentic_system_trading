@@ -4,7 +4,7 @@
 data_collection:
   hours_back: 24  # Hours of data to collect
   max_articles: 1000  # Maximum news articles to process
-  price_lookback_days: 7  # Days of historical price data (reduced for efficiency)
+  price_lookback_days: 30  # Days of historical price data
   crypto_granularity: 60  # 60 seconds = 1 minute candles
   crypto_data_source: "coinbase_advanced"  # Use Coinbase Advanced API
   

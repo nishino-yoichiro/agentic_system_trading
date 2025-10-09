@@ -12,9 +12,9 @@ from pathlib import Path
 import logging
 from loguru import logger
 
-from feature_engineering.technical_indicators import TechnicalIndicators
-from feature_engineering.alpha_factors import AlphaFactorGenerator
-from feature_engineering.nlp_processor import NLPProcessor
+from .feature_engineering.technical_indicators import TechnicalIndicators
+from .feature_engineering.alpha_factors import AlphaFactorGenerator
+from .feature_engineering.nlp_processor import NLPProcessor
 
 class CryptoAnalysisEngine:
     """Unified analysis engine for all crypto assets"""
@@ -24,7 +24,7 @@ class CryptoAnalysisEngine:
         self.alpha_factors = AlphaFactorGenerator()
         self.nlp_processor = NLPProcessor()
         
-    def load_symbol_data(self, symbol: str, days: int = 7) -> pd.DataFrame:
+    def load_symbol_data(self, symbol: str, days: int = 30) -> pd.DataFrame:
         """Load historical data for any symbol"""
         try:
             symbol = symbol.upper()

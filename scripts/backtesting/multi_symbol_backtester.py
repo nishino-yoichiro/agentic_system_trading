@@ -138,7 +138,7 @@ class MultiSymbolBacktester:
         
         return pd.DataFrame(signals)
     
-    def generate_signals_with_framework(self, symbol: str, days: int = 7, strategies: List[str] = None) -> pd.DataFrame:
+    def generate_signals_with_framework(self, symbol: str, days: int = 30, strategies: List[str] = None) -> pd.DataFrame:
         """Generate signals using the new crypto signal framework with historical data"""
         try:
             # Initialize signal integration with selected strategies
@@ -175,7 +175,7 @@ class MultiSymbolBacktester:
             traceback.print_exc()
             return pd.DataFrame()
     
-    def backtest_symbol(self, symbol: str, days: int = 3, use_sentiment: bool = False,
+    def backtest_symbol(self, symbol: str, days: int = 30, use_sentiment: bool = False,
                        verbose: bool = False, strategies: List[str] = None) -> BacktestResult:
         """Backtest a single symbol"""
         logger.info(f"Backtesting {symbol} ({'sentiment-enhanced' if use_sentiment else 'original'} strategy)")
@@ -207,9 +207,13 @@ class MultiSymbolBacktester:
             # Execute trade
             if action == 'BUY':
                 # Buy with available capital
-                shares = capital / current_price
-                position += shares
-                capital = 0
+                if capital > 0:
+                    shares = capital / current_price
+                    position += shares
+                    capital = 0
+                else:
+                    # No capital available, skip this trade
+                    continue
                 
                 trade = {
                     'timestamp': signal['timestamp'],
@@ -228,26 +232,30 @@ class MultiSymbolBacktester:
                     print(f"BUY {shares:.6f} {symbol} at ${current_price:.2f} (Net position: {position:.6f}) - {timestamp_str}")
                     
             elif action == 'SELL':
-                # Sell all available capital (short if needed)
-                shares = capital / current_price
-                position -= shares
-                capital = 0
-                
-                trade = {
-                    'timestamp': signal['timestamp'],
-                    'action': 'SELL',
-                    'price': current_price,
-                    'shares': shares,
-                    'capital_gained': shares * current_price,
-                    'confidence': confidence,
-                    'signal_score': signal['signal_score'],
-                    'sentiment_score': signal['sentiment_score']
-                }
-                trades.append(trade)
-                
-                if verbose:
-                    timestamp_str = signal['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
-                    print(f"SELL {shares:.6f} {symbol} at ${current_price:.2f} (Net position: {position:.6f}) - {timestamp_str}")
+                # Sell all available position
+                if position > 0:
+                    shares_to_sell = position
+                    capital = position * current_price
+                    position = 0
+                    
+                    trade = {
+                        'timestamp': signal['timestamp'],
+                        'action': 'SELL',
+                        'price': current_price,
+                        'shares': shares_to_sell,
+                        'capital_gained': capital,
+                        'confidence': confidence,
+                        'signal_score': signal['signal_score'],
+                        'sentiment_score': signal['sentiment_score']
+                    }
+                    trades.append(trade)
+                    
+                    if verbose:
+                        timestamp_str = signal['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
+                        print(f"SELL {shares_to_sell:.6f} {symbol} at ${current_price:.2f} (Net position: {position:.6f}) - {timestamp_str}")
+                else:
+                    # No position to sell, skip this trade
+                    continue
             
             # Update equity curve
             current_equity = capital + (position * current_price)
@@ -344,7 +352,7 @@ class MultiSymbolBacktester:
             final_capital=capital
         )
     
-    def backtest_multiple_symbols(self, symbols: List[str], days: int = 3, 
+    def backtest_multiple_symbols(self, symbols: List[str], days: int = 30, 
                                 use_sentiment: bool = False, verbose: bool = False, strategies: List[str] = None) -> Dict[str, BacktestResult]:
         """Backtest multiple symbols individually"""
         results = {}
@@ -387,7 +395,7 @@ class MultiSymbolBacktester:
         print(f"Backtest completed for {len(results)} symbols")
         return results
     
-    def backtest_portfolio(self, symbols: List[str], days: int = 3, 
+    def backtest_portfolio(self, symbols: List[str], days: int = 30, 
                           use_sentiment: bool = False, equal_weight: bool = True, strategies: List[str] = None) -> PortfolioResult:
         """Backtest a portfolio of symbols with rebalancing"""
         logger.info(f"Backtesting portfolio: {symbols} ({'sentiment-enhanced' if use_sentiment else 'original'} strategy)")
@@ -694,9 +702,9 @@ def main():
     parser.add_argument('--symbols', nargs='+', required=True, 
                        help='Symbols to backtest (e.g., BTC ETH ADA)')
     parser.add_argument('--strategies', nargs='*', default=None,
-                       help='Strategies to use (e.g., btc_asia_sweep eth_breakout_continuation). Default: all')
-    parser.add_argument('--days', type=int, default=3, 
-                       help='Number of days to backtest (default: 3)')
+                       help='Strategies to use. Default: all available strategies')
+    parser.add_argument('--days', type=int, default=30, 
+                       help='Number of days to backtest (default: 30)')
     parser.add_argument('--capital', type=float, default=10000.0, 
                        help='Initial capital (default: 10000)')
     parser.add_argument('--alpha', type=float, default=0.5, 

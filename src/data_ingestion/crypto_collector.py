@@ -249,13 +249,11 @@ class CryptoDataCollector:
                 gaps = self._find_data_gaps(symbol, start_time, end_time)
                 
                 if not gaps:
-                    # No gaps found, use existing data
+                    # No gaps found, no new data to return
                     if existing_data is not None:
-                        # Filter to requested time range
-                        filtered_data = existing_data[(existing_data.index >= start_time) & (existing_data.index <= end_time)]
-                        results[symbol] = filtered_data
                         no_gaps_count += 1
-                        logger.info(f"[NO GAPS] Using existing data for {symbol}: {len(filtered_data)} points")
+                        logger.info(f"[NO GAPS] {symbol} data is up to date, no new data needed")
+                        # Don't add to results - no new data
                         continue
                     else:
                         # No existing data, need to collect everything
@@ -394,20 +392,17 @@ class CryptoDataCollector:
                         else:
                             logger.info(f"[SUCCESS] {symbol} data is {completeness:.1f}% complete")
                         
-                        # Save to raw data directory for consolidation
-                        self._save_to_raw_data(symbol, filtered_data)
-                        
-                        logger.info(f"[SUCCESS] Updated {symbol} with {len(new_df)} new data points, total: {len(filtered_data)} points")
+                        # Only save to raw data if we actually collected new data
+                        if not all_new_candles:
+                            logger.info(f"[NO NEW DATA] {symbol} data is up to date, no new data to save")
+                        else:
+                            self._save_to_raw_data(symbol, new_df)
+                            logger.info(f"[SUCCESS] Updated {symbol} with {len(new_df)} new data points, total: {len(filtered_data)} points")
                     else:
                         logger.warning(f"[WARNING] Failed to load complete data for {symbol}")
                 else:
                     logger.warning(f"[WARNING] No new data collected for {symbol}")
-                    
-                    # Still try to return existing data if available
-                    if existing_data is not None:
-                        filtered_data = existing_data[(existing_data.index >= start_time) & (existing_data.index <= end_time)]
-                        results[symbol] = filtered_data
-                        logger.info(f"[EXISTING] Using existing data for {symbol}: {len(filtered_data)} points")
+                    # Don't return existing data - no new data means no update needed
                     
             except Exception as e:
                 logger.error(f"[ERROR] Error collecting data for {symbol}: {e}")
