@@ -16,14 +16,37 @@ import logging
 from pathlib import Path
 import json
 from datetime import datetime, timedelta
+import sys
 
-from . import crypto_signal_framework
-from . import crypto_trading_strategies
-from . import crypto_analysis_engine
-from . import crypto_signal_generator
+# Add src to path for progress logger
+sys.path.append(str(Path(__file__).parent))
+from utils.progress_logger import progress_logger, create_signal_progress
 
-CryptoSignalFramework = crypto_signal_framework.CryptoSignalFramework
+try:
+    from . import crypto_signal_framework
+    from . import crypto_trading_strategies
+    from . import crypto_analysis_engine
+    from . import crypto_signal_generator
+    from . import btc_ny_session_strategy
+    from . import professional_crypto_strategies
+except ImportError:
+    # Fallback for when running as script
+    import crypto_signal_framework
+    import crypto_trading_strategies
+    import crypto_analysis_engine
+    import crypto_signal_generator
+    import btc_ny_session_strategy
+    import professional_crypto_strategies
+
+# Import new professional framework classes
+SignalFramework = crypto_signal_framework.SignalFramework
 StrategyConfig = crypto_signal_framework.StrategyConfig
+StrategyMetadata = crypto_signal_framework.StrategyMetadata
+StrategyType = crypto_signal_framework.StrategyType
+BaseStrategy = crypto_signal_framework.BaseStrategy
+
+# Legacy imports for compatibility
+CryptoSignalFramework = crypto_signal_framework.CryptoSignalFramework
 CryptoTradingStrategies = crypto_trading_strategies.CryptoTradingStrategies
 CryptoAnalysisEngine = crypto_analysis_engine.CryptoAnalysisEngine
 CryptoSentimentGenerator = crypto_signal_generator.CryptoSentimentGenerator
@@ -37,12 +60,13 @@ class CryptoSignalIntegration:
     
     def __init__(self, data_dir: str = "data", selected_strategies: List[str] = None):
         self.data_dir = Path(data_dir)
-        self.framework = CryptoSignalFramework()
+        # Use new professional framework
+        self.framework = SignalFramework(max_lookback=100)
         self.strategies = CryptoTradingStrategies()
         self.analysis_engine = CryptoAnalysisEngine()
         self.sentiment_generator = CryptoSentimentGenerator()
         
-        # Initialize strategies
+        # Initialize strategies using new professional approach
         self._setup_strategies(selected_strategies)
         
         # Performance tracking
@@ -50,17 +74,39 @@ class CryptoSignalIntegration:
         self.signal_log = []
         
     def _setup_strategies(self, selected_strategies: List[str] = None):
-        """Setup trading strategies in the framework"""
-        strategy_configs = self.strategies.get_strategy_configs()
+        """Setup trading strategies using new professional framework"""
         
-        for config in strategy_configs:
+        # Add BTC NY Session strategy using new professional approach
+        if not selected_strategies or 'btc_ny_session' in selected_strategies:
+            btc_strategy = btc_ny_session_strategy.BTCNYSessionStrategy()
+            self.framework.add_strategy(btc_strategy)
+            logger.info(f"Added professional strategy: {btc_strategy.name}")
+        
+        # Add other professional strategies
+        professional_strategies = [
+            'liquidity_sweep_reversal',
+            'volume_weighted_trend_continuation', 
+            'volatility_expansion_breakout',
+            'daily_avwap_zscore_reversion',
+            'opening_range_break_retest',
+            'keltner_exhaustion_fade',
+            'fakeout_reversion'
+        ]
+        
+        for strategy_name in professional_strategies:
             # Only add selected strategies if specified
-            if selected_strategies and config.name not in selected_strategies:
+            if selected_strategies and strategy_name not in selected_strategies:
                 continue
-                
-            strategy_function = self.strategies.strategies[config.name]['function']
-            self.framework.add_strategy(config, strategy_function)
-            logger.info(f"Added strategy: {config.name}")
+            
+            try:
+                strategy = professional_crypto_strategies.create_strategy(strategy_name)
+                if strategy:
+                    self.framework.add_strategy(strategy)
+                    logger.info(f"Added professional strategy: {strategy.name}")
+                else:
+                    logger.warning(f"Failed to create strategy: {strategy_name}")
+            except Exception as e:
+                logger.error(f"Error adding strategy {strategy_name}: {e}")
     
     def load_crypto_data(self, symbols: List[str], days: int = 1095) -> Dict[str, pd.DataFrame]:
         """Load crypto data for signal generation (default: 3 years)"""
@@ -97,20 +143,27 @@ class CryptoSignalIntegration:
             
             # Filter strategies if specified
             if strategies:
-                # Only process selected strategies for this symbol
-                symbol_strategies = [s for s in strategies if s.startswith(symbol.lower())]
+                # Check if any of the selected strategies are configured for this symbol
+                symbol_strategies = [s for s in strategies if s in self.framework.strategies]
                 if not symbol_strategies:
                     continue
             
             # Generate signals for the entire dataset at once (vectorized)
             logger.info(f"Processing {symbol} with {len(symbol_data)} data points")
             
+            # Create progress bar for signal generation
+            strategy_names = [s for s in strategies] if strategies else list(self.framework.strategies.keys())
+            pbar = create_signal_progress(len(symbol_data), symbol, f"{len(strategy_names)} strategies")
+            
             # Generate signals for the entire dataset
             try:
-                signals = self.framework.generate_signals({symbol: symbol_data})
+                signals = self.framework.generate_signals({symbol: symbol_data}, progress_bar=pbar, strategies=strategies)
             except Exception as e:
                 logger.warning(f"Error generating signals for {symbol}: {e}")
+                pbar.close()
                 continue
+            
+            pbar.close()
             
             # Process the generated signals
             for signal in signals:
@@ -124,11 +177,12 @@ class CryptoSignalIntegration:
                         'strategy': signal.strategy_name,
                         'signal_type': signal.signal_type.name,
                         'confidence': signal.confidence,
-                        'entry_price': signal.entry_price,
+                        'price': signal.entry_price,  # Map entry_price to price for backtester compatibility
+                        'action': 'BUY' if signal.signal_type.name == 'LONG' else 'SELL' if signal.signal_type.name == 'SHORT' else 'HOLD',
                         'stop_loss': signal.stop_loss,
                         'take_profit': signal.take_profit,
                         'reason': signal.reason,
-                        'timestamp': symbol_data.index[-1].isoformat() if hasattr(symbol_data.index[-1], 'isoformat') else str(symbol_data.index[-1]),
+                        'timestamp': signal.timestamp.isoformat() if hasattr(signal.timestamp, 'isoformat') else str(signal.timestamp),
                         'risk_size': signal.risk_size
                     }
                     all_signals.append(signal_dict)

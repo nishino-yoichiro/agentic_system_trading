@@ -18,7 +18,6 @@ Key Features:
 from .news_apis import NewsAPIClient, RavenPackClient
 from .price_apis import PolygonClient, AlpacaClient, BinanceClient, CoinGeckoClient
 from .data_validator import DataValidator
-from .unified_collector import UnifiedDataCollector
 
 # Optional imports for exchange clients (may not be available in all environments)
 try:
@@ -68,7 +67,6 @@ __all__ = [
     'create_coinbase_rest_client',
     'RedditClient',
     'TwitterClient',
-    'DataValidator',
-    'UnifiedDataCollector'
+    'DataValidator'
 ]
 

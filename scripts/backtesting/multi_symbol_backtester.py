@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Multi-Symbol Crypto Backtester
-Universal backtesting framework for all crypto assets with portfolio analysis
+Professional backtesting framework with enhanced metrics and visualization
 """
 
 import pandas as pd
@@ -16,25 +16,31 @@ import argparse
 import json
 from dataclasses import dataclass
 import warnings
+from tqdm import tqdm
+import bisect
+
+# Import professional architecture
+from equity_curve_model import EquityCurve, EquityCurveFactory, RollingWindowManager, NormalizationPolicy
+from professional_report_generator import ReportGenerator, ReportConfig
+
 warnings.filterwarnings('ignore')
 
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent / "src"))
 
-from crypto_analysis_engine import CryptoAnalysisEngine
-from crypto_signal_generator import CryptoSentimentGenerator
 from crypto_signal_integration import CryptoSignalIntegration
+from crypto_analysis_engine import CryptoAnalysisEngine
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 @dataclass
 class BacktestResult:
     """Container for individual symbol backtest results"""
     symbol: str
-    strategy: str  # 'original' or 'sentiment_enhanced'
+    strategy: str
     total_return: float
     annualized_return: float
     sharpe_ratio: float
@@ -48,47 +54,58 @@ class BacktestResult:
     end_date: datetime
     initial_capital: float
     final_capital: float
+    
+    # Enhanced metrics
+    rolling_sharpe: Dict[int, pd.Series] = None
+    segmented_performance: Dict[str, Dict] = None
+    regime_performance: Dict[str, Dict] = None
+    optimal_conditions: List[Tuple[str, float, str]] = None
 
 @dataclass
 class PortfolioResult:
-    """Container for portfolio-level backtest results"""
+    """Container for portfolio backtest results"""
     symbols: List[str]
-    strategy: str
     total_return: float
     annualized_return: float
     sharpe_ratio: float
     max_drawdown: float
-    correlation_matrix: pd.DataFrame
+    final_capital: float
     individual_results: Dict[str, BacktestResult]
     portfolio_equity_curve: pd.Series
     rebalance_dates: List[datetime]
 
 class MultiSymbolBacktester:
-    """Universal backtester for multiple crypto symbols with portfolio analysis"""
+    """Professional multi-symbol crypto backtester with enhanced metrics"""
     
-    def __init__(self, initial_capital: float = 10000.0, alpha: float = 0.5, 
-                 rebalance_frequency: str = 'daily'):
+    def __init__(self, initial_capital: float = 100000):
         self.initial_capital = initial_capital
-        self.alpha = alpha
-        self.rebalance_frequency = rebalance_frequency
         self.analysis_engine = CryptoAnalysisEngine()
-        self.sentiment_generator = CryptoSentimentGenerator(alpha=alpha)
-        self.signal_integration = None  # Will be initialized with selected strategies
+        self.signal_integration = CryptoSignalIntegration()
         
-        # Available symbols from data directory
+        # Get available symbols from data directory
         self.available_symbols = self._get_available_symbols()
+        logger.info(f"Available symbols: {self.available_symbols}")
         
     def _get_available_symbols(self) -> List[str]:
-        """Get list of available symbols from data directory"""
+        """Get available symbols from data directory"""
         data_dir = Path("data/crypto_db")
+        if not data_dir.exists():
+            logger.warning("Data directory not found, using default symbols")
+            return ['BTC', 'ETH', 'ADA', 'SOL', 'DOT', 'AVAX', 'MATIC', 'LINK', 'UNI']
+        
         symbols = []
-        for file in data_dir.glob("*_historical.parquet"):
-            symbol = file.stem.replace("_historical", "").upper()
+        for file_path in data_dir.glob("*_historical.parquet"):
+            symbol = file_path.stem.replace("_historical", "").upper()
             symbols.append(symbol)
+        
+        if not symbols:
+            logger.warning("No symbol data found, using default symbols")
+            return ['BTC', 'ETH', 'ADA', 'SOL', 'DOT', 'AVAX', 'MATIC', 'LINK', 'UNI']
+        
         return sorted(symbols)
     
-    def load_symbol_data(self, symbol: str, days: int = 3) -> pd.DataFrame:
-        """Load historical data for a specific symbol"""
+    def load_symbol_data(self, symbol: str, days: int = 30) -> pd.DataFrame:
+        """Load historical data for a symbol"""
         try:
             df = self.analysis_engine.load_symbol_data(symbol, days=days)
             logger.info(f"Loaded {len(df)} data points for {symbol}")
@@ -97,234 +114,361 @@ class MultiSymbolBacktester:
             logger.error(f"Error loading data for {symbol}: {e}")
             return pd.DataFrame()
     
-    def generate_signals_for_symbol(self, df: pd.DataFrame, symbol: str, 
-                                  lookback_hours: int = 24, use_sentiment: bool = False) -> pd.DataFrame:
-        """Generate trading signals for a specific symbol"""
-        signals = []
-        
-        for i in range(lookback_hours, len(df)):
-            # Get data up to current point (no lookahead bias)
-            current_data = df.iloc[:i+1].copy()
-            
-            try:
-                if use_sentiment:
-                    # Use sentiment-enhanced generator
-                    signal_data = self.sentiment_generator.generate_enhanced_signals(
-                        current_data, symbol=symbol
-                    )
-                else:
-                    # Use base analysis engine
-                    signal_data = self.analysis_engine.generate_signals(current_data, symbol)
-                
-                signals.append({
-                    'timestamp': current_data.index[-1],
-                    'price': current_data['close'].iloc[-1],
-                    'action': signal_data.get('enhanced_signal_type', signal_data.get('signal_type', 'HOLD')),
-                    'confidence': signal_data.get('enhanced_confidence', signal_data.get('confidence', 0)),
-                    'signal_score': signal_data.get('enhanced_signal_strength', signal_data.get('signal_strength', 0)),
-                    'sentiment_score': signal_data.get('sentiment_score', 0) if use_sentiment else 0
-                })
-                
-            except Exception as e:
-                logger.warning(f"Error generating signal for {symbol} at {current_data.index[-1]}: {e}")
-                signals.append({
-                    'timestamp': current_data.index[-1],
-                    'price': current_data['close'].iloc[-1],
-                    'action': 'HOLD',
-                    'confidence': 0,
-                    'signal_score': 0,
-                    'sentiment_score': 0
-                })
-        
-        return pd.DataFrame(signals)
-    
-    def generate_signals_with_framework(self, symbol: str, days: int = 30, strategies: List[str] = None) -> pd.DataFrame:
-        """Generate signals using the new crypto signal framework with historical data"""
+    def generate_signals_with_framework(self, symbol: str, days: int = 30, 
+                                       strategies: List[str] = None) -> pd.DataFrame:
+        """Generate signals using the professional framework"""
         try:
-            # Initialize signal integration with selected strategies
-            if self.signal_integration is None or strategies:
-                self.signal_integration = CryptoSignalIntegration(selected_strategies=strategies)
-                logger.info(f"Initialized signal integration with strategies: {strategies}")
+            logger.info(f"Generating signals for symbol: '{symbol}' (type: {type(symbol)})")
+            logger.info(f"Symbols list: {[symbol]} (type: {type([symbol])})")
             
-            # Generate signals once for the entire period
-            signal_data = self.signal_integration.generate_signals([symbol], days=days, strategies=strategies)
+            # Convert single symbol to list as expected by the framework
+            signals_list = self.signal_integration.generate_signals([symbol], days=days, strategies=strategies)
             
-            signals = []
-            for signal_dict in signal_data:
-                if signal_dict['symbol'] == symbol and signal_dict['signal_type'] != 'HOLD':
-                    # Convert signal types to backtester format
-                    action = 'BUY' if signal_dict['signal_type'] == 'LONG' else 'SELL' if signal_dict['signal_type'] == 'SHORT' else 'HOLD'
-                    
-                    signals.append({
-                        'timestamp': pd.Timestamp(signal_dict['timestamp']),
-                        'price': signal_dict['entry_price'],
-                        'action': action,
-                        'confidence': signal_dict['confidence'],
-                        'signal_score': signal_dict['confidence'],
-                        'sentiment_score': 0,
-                        'reason': signal_dict['reason']
-                    })
+            if not signals_list:
+                logger.warning(f"No signals generated for {symbol}")
+                return pd.DataFrame()
             
-            logger.info(f"Generated {len(signals)} signals for {symbol} using new framework")
-            return pd.DataFrame(signals)
-            
+            # Convert list of signals to DataFrame
+            signals_df = pd.DataFrame(signals_list)
+            logger.info(f"Generated {len(signals_df)} signals for {symbol} using new framework")
+            return signals_df
         except Exception as e:
-            logger.error(f"Error generating signals with framework: {e}")
-            print(f"DEBUG: Exception in generate_signals_with_framework: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Error generating signals for {symbol}: {e}")
             return pd.DataFrame()
     
-    def backtest_symbol(self, symbol: str, days: int = 30, use_sentiment: bool = False,
-                       verbose: bool = False, strategies: List[str] = None) -> BacktestResult:
-        """Backtest a single symbol"""
-        logger.info(f"Backtesting {symbol} ({'sentiment-enhanced' if use_sentiment else 'original'} strategy)")
+    def calculate_rolling_metrics(self, returns: pd.Series, windows: List[int] = None) -> Dict[int, pd.Series]:
+        """Calculate rolling Sharpe ratios for different windows"""
+        rolling_sharpe = {}
         
-        # Load data
-        df = self.load_symbol_data(symbol, days)
-        if df.empty:
-            raise ValueError(f"No data available for {symbol}")
+        # Auto-adjust windows based on data length (proportional to backtest period)
+        if windows is None:
+            data_length = len(returns)
+            # Use windows that are proportional to the data length
+            # For 30-day backtest with ~43k data points, use much smaller windows
+            if data_length < 100:
+                windows = [3, 5, 7]  # Very short data
+            elif data_length < 1000:
+                windows = [5, 10, 15]  # Short data (few days)
+            elif data_length < 10000:
+                windows = [10, 20, 30]  # Medium data (few weeks)
+            elif data_length < 50000:
+                windows = [20, 50, 100]  # Longer data (month+)
+            else:
+                windows = [50, 100, 200]  # Very long data (months+)
         
-        # Generate signals using new framework
-        signals_df = self.generate_signals_with_framework(symbol, days=days, strategies=strategies)
+        logger.info(f"Calculating rolling metrics for {len(returns)} returns with windows: {windows}")
         
-        # If no signals from new framework, fall back to old method
-        if signals_df.empty:
-            logger.info(f"No signals from new framework, using fallback for {symbol}")
-            signals_df = self.generate_signals_for_symbol(df, symbol, use_sentiment=use_sentiment)
+        for window in windows:
+            if len(returns) < window:
+                logger.warning(f"Insufficient data for {window}-period rolling analysis: {len(returns)} < {window}")
+                continue
+                
+            rolling_mean = returns.rolling(window=window).mean()
+            rolling_std = returns.rolling(window=window).std()
+            rolling_sharpe[window] = rolling_mean / rolling_std
+            
+            logger.info(f"Calculated {window}-period rolling Sharpe: {len(rolling_sharpe[window])} values")
         
-        # Execute trades
+        logger.info(f"Rolling Sharpe calculation complete: {len(rolling_sharpe)} windows")
+        return rolling_sharpe
+    
+    def calculate_segmented_performance(self, trades: List[Dict], returns: pd.Series) -> Dict[str, Dict]:
+        """Calculate performance segmented by time and volatility"""
+        if not trades:
+            return {}
+        
+        logger.info(f"Calculating segmented performance for {len(trades)} trades")
+        
+        trades_df = pd.DataFrame(trades)
+        trades_df['timestamp'] = pd.to_datetime(trades_df['timestamp'])
+        
+        segmented_performance = {}
+        
+        # Time-based segmentation
+        segmented_performance.update(self._segment_by_time(trades_df, returns))
+        
+        # Volatility-based segmentation
+        segmented_performance.update(self._segment_by_volatility(trades_df, returns))
+        
+        logger.info(f"Total segmented performance: {list(segmented_performance.keys())}")
+        return segmented_performance
+    
+    def _segment_by_time(self, trades_df: pd.DataFrame, returns: pd.Series) -> Dict[str, Dict]:
+        """Segment performance by time periods"""
+        segments = {}
+        
+        # Hour of day
+        if len(trades_df) > 0:
+            # Convert timestamp to datetime if it's a string
+            if trades_df['timestamp'].dtype == 'object':
+                trades_df['timestamp'] = pd.to_datetime(trades_df['timestamp'])
+            trades_df['hour'] = trades_df['timestamp'].dt.hour
+            hourly_performance = {}
+            
+            for hour in range(24):
+                hour_trades = trades_df[trades_df['hour'] == hour]
+                if len(hour_trades) > 0:
+                    hour_returns = [trade.get('pnl', 0) for trade in hour_trades.to_dict('records')]
+                    if hour_returns:
+                        sharpe = np.mean(hour_returns) / np.std(hour_returns) if np.std(hour_returns) > 0 else 0
+                        hourly_performance[hour] = {
+                            'sharpe_ratio': sharpe,
+                            'count': len(hour_trades),
+                            'avg_return': np.mean(hour_returns)
+                        }
+            
+            if hourly_performance:
+                segments['hourly'] = hourly_performance
+        
+        # Day of week
+        if len(trades_df) > 0:
+            # Convert timestamp to datetime if it's a string (already done above, but ensure it's done)
+            if trades_df['timestamp'].dtype == 'object':
+                trades_df['timestamp'] = pd.to_datetime(trades_df['timestamp'])
+            trades_df['dayofweek'] = trades_df['timestamp'].dt.dayofweek
+            dow_performance = {}
+            
+            for day in range(7):
+                day_trades = trades_df[trades_df['dayofweek'] == day]
+                if len(day_trades) > 0:
+                    day_returns = [trade.get('pnl', 0) for trade in day_trades.to_dict('records')]
+                    if day_returns:
+                        sharpe = np.mean(day_returns) / np.std(day_returns) if np.std(day_returns) > 0 else 0
+                        dow_performance[day] = {
+                            'sharpe_ratio': sharpe,
+                            'count': len(day_trades),
+                            'avg_return': np.mean(day_returns)
+                        }
+            
+            if dow_performance:
+                segments['dayofweek'] = dow_performance
+        
+        logger.info(f"Time segments: {list(segments.keys())}")
+        return segments
+    
+    def _segment_by_volatility(self, trades_df: pd.DataFrame, returns: pd.Series) -> Dict[str, Dict]:
+        """Segment performance by volatility regimes"""
+        if len(returns) < 10:
+            logger.warning("Insufficient data for volatility segmentation")
+            return {}
+        
+        # Calculate rolling volatility
+        rolling_vol = returns.rolling(window=min(20, len(returns)//2)).std()
+        vol_median = rolling_vol.median()
+        
+        # Ensure rolling_vol.index is timezone-aware DatetimeIndex
+        if hasattr(rolling_vol.index, 'tz') and rolling_vol.index.tz is None:
+            rolling_vol.index = rolling_vol.index.tz_localize('UTC')
+        elif not hasattr(rolling_vol.index, 'tz'):
+            # If it's not a DatetimeIndex, convert it
+            rolling_vol.index = pd.to_datetime(rolling_vol.index, utc=True)
+        
+        volatility_segments = {}
+        
+        for _, trade in trades_df.iterrows():
+            trade_time = trade['timestamp']
+            
+            # Ensure trade_time is a pandas Timestamp for comparison
+            if isinstance(trade_time, str):
+                trade_time = pd.to_datetime(trade_time)
+            
+            # Ensure trade_time is timezone-aware for comparison
+            if trade_time.tz is None:
+                trade_time = trade_time.tz_localize('UTC')
+            
+            # Find closest volatility reading
+            vol_at_time = rolling_vol.loc[rolling_vol.index <= trade_time]
+            if len(vol_at_time) > 0:
+                vol_at_time = vol_at_time.iloc[-1]
+                
+                if pd.notna(vol_at_time):
+                    regime = 'High' if vol_at_time > vol_median else 'Low'
+                    
+                    if regime not in volatility_segments:
+                        volatility_segments[regime] = []
+                    
+                    volatility_segments[regime].append(trade.get('pnl', 0))
+        
+        # Calculate metrics for each regime
+        volatility_performance = {}
+        for regime, returns_list in volatility_segments.items():
+            if returns_list:
+                sharpe = np.mean(returns_list) / np.std(returns_list) if np.std(returns_list) > 0 else 0
+                volatility_performance[regime] = {
+                    'sharpe_ratio': sharpe,
+                    'count': len(returns_list),
+                    'avg_return': np.mean(returns_list)
+                }
+        
+        logger.info(f"Volatility segments: {list(volatility_performance.keys())}")
+        return {'volatility': volatility_performance} if volatility_performance else {}
+    
+    def detect_market_regimes(self, returns: pd.Series) -> Dict[str, Dict]:
+        """Detect market regimes and calculate performance per regime"""
+        if len(returns) < 10:
+            logger.warning("Insufficient data for regime detection")
+            return {}
+        
+        logger.info(f"Detecting market regimes for {len(returns)} returns")
+        
+        # Calculate rolling volatility and trend
+        window = min(5, len(returns)//2)
+        rolling_vol = returns.rolling(window=window).std()
+        rolling_trend = returns.rolling(window=window).mean()
+        
+        vol_median = rolling_vol.median()
+        trend_median = rolling_trend.median()
+        
+        logger.info(f"Vol median: {vol_median:.6f}, Trend median: {trend_median:.6f}")
+        
+        # Classify regimes
+        regimes = {}
+        for i, (vol, trend) in enumerate(zip(rolling_vol, rolling_trend)):
+            if pd.notna(vol) and pd.notna(trend):
+                vol_regime = 'High' if vol > vol_median else ('Medium' if vol > vol_median * 0.7 else 'Low')
+                trend_regime = 'Up' if trend > trend_median else 'Down'
+                regime = f"{vol_regime}_Vol_{trend_regime}_Trend"
+                
+                if regime not in regimes:
+                    regimes[regime] = []
+                
+                if i < len(returns):
+                    regimes[regime].append(returns.iloc[i])
+        
+        # Calculate performance per regime
+        regime_performance = {}
+        for regime, returns_list in regimes.items():
+            if len(returns_list) > 0:
+                sharpe = np.mean(returns_list) / np.std(returns_list) if np.std(returns_list) > 0 else 0
+                regime_performance[regime] = {
+                    'sharpe_ratio': sharpe,
+                    'count': len(returns_list),
+                    'avg_return': np.mean(returns_list)
+                }
+                logger.info(f"Regime {regime}: Sharpe={sharpe:.3f}, Count={len(returns_list)}")
+        
+        logger.info(f"Regime performance calculation complete: {len(regime_performance)} regimes")
+        return regime_performance
+    
+    def find_optimal_conditions(self, segmented_performance: Dict[str, Dict], 
+                               regime_performance: Dict[str, Dict]) -> List[Tuple[str, float, str]]:
+        """Find optimal trading conditions based on Sharpe ratios"""
+        optimal_conditions = []
+        
+        # Add segmented performance conditions
+        for segment_type, segments in segmented_performance.items():
+            for segment, metrics in segments.items():
+                sharpe = metrics.get('sharpe_ratio', 0)
+                if sharpe > 0.5:  # Threshold for "good" performance
+                    optimal_conditions.append((str(segment), sharpe, segment_type))
+        
+        # Add regime performance conditions
+        for regime, metrics in regime_performance.items():
+            sharpe = metrics.get('sharpe_ratio', 0)
+            if sharpe > 0.5:  # Threshold for "good" performance
+                optimal_conditions.append((regime, sharpe, 'regime'))
+        
+        # Sort by Sharpe ratio (descending)
+        optimal_conditions.sort(key=lambda x: x[1], reverse=True)
+        
+        return optimal_conditions[:10]  # Top 10 conditions
+    
+    def _execute_trades_for_strategy(self, symbol: str, strategy: str, signals_df: pd.DataFrame, 
+                                   df: pd.DataFrame, verbose: bool = False) -> BacktestResult:
+        """Execute trades for a specific strategy and return BacktestResult"""
         trades = []
-        capital = self.initial_capital
-        position = 0  # Net position (positive = long, negative = short)
-        equity_curve = []
+        equity = [self.initial_capital]
+        position = 0.0
+        position_cost = 0.0  # Track the cost basis of current position
         
         for _, signal in signals_df.iterrows():
-            current_price = signal['price']
+            timestamp = signal['timestamp']
+            price = signal['price']
             action = signal['action']
-            confidence = signal['confidence']
             
-            # Execute trade
-            if action == 'BUY':
-                # Buy with available capital
-                if capital > 0:
-                    shares = capital / current_price
-                    position += shares
-                    capital = 0
-                else:
-                    # No capital available, skip this trade
-                    continue
+            if action == 'BUY' and position <= 0:
+                # Close short position if any, then go long
+                if position < 0:
+                    # Close short: profit = (short_price - current_price) * quantity
+                    pnl = -position * (position_cost - price)  # position_cost is the short price
+                    trades.append({
+                        'timestamp': timestamp,
+                        'action': 'CLOSE_SHORT',
+                        'price': price,
+                        'quantity': -position,
+                        'pnl': pnl,
+                        'capital_used': 0,
+                        'capital_gained': -position * price
+                    })
                 
-                trade = {
-                    'timestamp': signal['timestamp'],
+                # Open long position
+                quantity = self.initial_capital * 0.1 / price  # 10% of capital
+                position = quantity
+                position_cost = price  # Track the buy price
+                capital_used = quantity * price
+                
+                trades.append({
+                    'timestamp': timestamp,
                     'action': 'BUY',
-                    'price': current_price,
-                    'shares': shares,
-                    'capital_used': shares * current_price,
-                    'confidence': confidence,
-                    'signal_score': signal['signal_score'],
-                    'sentiment_score': signal['sentiment_score']
-                }
-                trades.append(trade)
+                    'price': price,
+                    'quantity': quantity,
+                    'pnl': 0,
+                    'capital_used': capital_used,
+                    'capital_gained': 0
+                })
                 
                 if verbose:
-                    timestamp_str = signal['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
-                    print(f"BUY {shares:.6f} {symbol} at ${current_price:.2f} (Net position: {position:.6f}) - {timestamp_str}")
+                    logger.info(f"{timestamp} - BUY {quantity:.6f} {symbol} at ${price:.2f}")
                     
-            elif action == 'SELL':
-                # Sell all available position
-                if position > 0:
-                    shares_to_sell = position
-                    capital = position * current_price
-                    position = 0
-                    
-                    trade = {
-                        'timestamp': signal['timestamp'],
-                        'action': 'SELL',
-                        'price': current_price,
-                        'shares': shares_to_sell,
-                        'capital_gained': capital,
-                        'confidence': confidence,
-                        'signal_score': signal['signal_score'],
-                        'sentiment_score': signal['sentiment_score']
-                    }
-                    trades.append(trade)
-                    
-                    if verbose:
-                        timestamp_str = signal['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
-                        print(f"SELL {shares_to_sell:.6f} {symbol} at ${current_price:.2f} (Net position: {position:.6f}) - {timestamp_str}")
-                else:
-                    # No position to sell, skip this trade
-                    continue
+            elif action == 'SELL' and position > 0:
+                # Close long position only (long-only strategy)
+                # Close long: profit = (sell_price - buy_price) * quantity
+                pnl = position * (price - position_cost)
+                trades.append({
+                    'timestamp': timestamp,
+                    'action': 'SELL',
+                    'price': price,
+                    'quantity': position,
+                    'pnl': pnl,
+                    'capital_used': 0,
+                    'capital_gained': position * price
+                })
+                
+                # Reset position to 0 (no shorting)
+                position = 0.0
+                position_cost = 0.0
+                
+                if verbose:
+                    logger.info(f"{timestamp} - SELL {position:.6f} {symbol} at ${price:.2f}")
             
-            # Update equity curve
-            current_equity = capital + (position * current_price)
-            equity_curve.append({'timestamp': signal['timestamp'], 'equity': current_equity})
-        
-        # Final liquidation at end of backtest
-        final_price = df['close'].iloc[-1]
-        if position != 0:
-            # Liquidate all remaining position
-            capital = position * final_price
-            if verbose:
-                final_timestamp = df.index[-1].strftime('%Y-%m-%d %H:%M:%S')
-                print(f"Final liquidation: {position:.6f} {symbol} at ${final_price:.2f} = ${capital:.2f} - {final_timestamp}")
-            position = 0
+            # Update equity
+            if trades:
+                total_pnl = sum(trade.get('pnl', 0) for trade in trades)
+                equity.append(self.initial_capital + total_pnl)
         
         # Calculate metrics
-        total_return = (capital - self.initial_capital) / self.initial_capital
-        days_traded = (signals_df['timestamp'].iloc[-1] - signals_df['timestamp'].iloc[0]).days
-        annualized_return = (1 + total_return) ** (365 / days_traded) - 1 if days_traded > 0 else 0
-        
-        # Calculate equity curve
-        equity_curve = [self.initial_capital]
-        current_capital = self.initial_capital
-        current_position = 0
-        
-        for _, signal in signals_df.iterrows():
-            current_price = signal['price']
-            action = signal['action']
+        if len(equity) > 1:
+            # Create proper timestamps for equity curve
+            timestamps = [signals_df['timestamp'].iloc[0]] + list(signals_df['timestamp'])
+            equity_series = pd.Series(equity, index=timestamps[:len(equity)])
+            returns = equity_series.pct_change().dropna()
             
-            if action == 'BUY' and current_position == 0 and current_capital > current_price:
-                current_position = current_capital / current_price
-                current_capital = 0
-            elif action == 'SELL' and current_position > 0:
-                current_capital = current_position * current_price
-                current_position = 0
+            total_return = (equity[-1] - equity[0]) / equity[0]
+            annualized_return = (1 + total_return) ** (365 / len(signals_df)) - 1 if len(signals_df) > 0 else 0
             
-            # Current portfolio value
-            portfolio_value = current_capital + (current_position * current_price)
-            equity_curve.append(portfolio_value)
-        
-        equity_series = pd.Series(equity_curve, index=signals_df['timestamp'].tolist() + [signals_df['timestamp'].iloc[-1]])
-        
-        # Calculate additional metrics
-        returns = equity_series.pct_change().dropna()
-        sharpe_ratio = returns.mean() / returns.std() * np.sqrt(252) if returns.std() > 0 else 0
-        
-        # Max drawdown
-        rolling_max = equity_series.expanding().max()
-        drawdown = (equity_series - rolling_max) / rolling_max
-        max_drawdown = drawdown.min()
-        
-        # Win rate
-        winning_trades = [t for t in trades if t['action'] == 'SELL' and len(trades) > 1]
-        if len(winning_trades) > 1:
-            # Calculate P&L for each trade pair
-            trade_pairs = []
-            for i in range(0, len(trades)-1, 2):
-                if i+1 < len(trades) and trades[i]['action'] == 'BUY' and trades[i+1]['action'] == 'SELL':
-                    pnl = trades[i+1]['capital_gained'] - trades[i]['capital_used']
-                    trade_pairs.append(pnl)
+            sharpe_ratio = returns.mean() / returns.std() if returns.std() > 0 else 0
             
-            win_rate = len([p for p in trade_pairs if p > 0]) / len(trade_pairs) if trade_pairs else 0
-        else:
-            win_rate = 0
-        
-        # Profit factor
-        if trades:
-            buy_trades = [t for t in trades if t['action'] == 'BUY']
-            sell_trades = [t for t in trades if t['action'] == 'SELL']
+            peak = equity_series.expanding().max()
+            drawdown = (equity_series - peak) / peak
+            max_drawdown = drawdown.min()
+            
+            winning_trades = [t for t in trades if t.get('pnl', 0) > 0]
+            win_rate = len(winning_trades) / len(trades) if trades else 0
+            
+            # Calculate profit factor
+            buy_trades = [t for t in trades if t.get('capital_used', 0) > 0]
+            sell_trades = [t for t in trades if t.get('capital_gained', 0) > 0]
+            
             if buy_trades and sell_trades:
                 total_buy_value = sum(t['capital_used'] for t in buy_trades)
                 total_sell_value = sum(t['capital_gained'] for t in sell_trades)
@@ -332,11 +476,24 @@ class MultiSymbolBacktester:
             else:
                 profit_factor = 0
         else:
+            equity_series = pd.Series([self.initial_capital])
+            returns = pd.Series([])
+            total_return = 0
+            annualized_return = 0
+            sharpe_ratio = 0
+            max_drawdown = 0
+            win_rate = 0
             profit_factor = 0
+        
+        # Calculate enhanced metrics
+        rolling_sharpe = self.calculate_rolling_metrics(returns)
+        segmented_performance = self.calculate_segmented_performance(trades, returns)
+        regime_performance = self.detect_market_regimes(returns)
+        optimal_conditions = self.find_optimal_conditions(segmented_performance, regime_performance)
         
         return BacktestResult(
             symbol=symbol,
-            strategy='sentiment_enhanced' if use_sentiment else 'original',
+            strategy=strategy,
             total_return=total_return,
             annualized_return=annualized_return,
             sharpe_ratio=sharpe_ratio,
@@ -349,352 +506,186 @@ class MultiSymbolBacktester:
             start_date=signals_df['timestamp'].iloc[0],
             end_date=signals_df['timestamp'].iloc[-1],
             initial_capital=self.initial_capital,
-            final_capital=capital
+            final_capital=equity[-1] if equity else self.initial_capital,
+            rolling_sharpe=rolling_sharpe,
+            segmented_performance=segmented_performance,
+            regime_performance=regime_performance,
+            optimal_conditions=optimal_conditions
         )
     
+    def backtest_symbol(self, symbol: str, days: int = 30, use_sentiment: bool = False,
+                       verbose: bool = False, strategies: List[str] = None) -> Dict[str, BacktestResult]:
+        """Backtest a single symbol with multiple strategies"""
+        logger.info(f"Backtesting {symbol} with strategies: {strategies}")
+        
+        # Load data
+        df = self.load_symbol_data(symbol, days)
+        if df.empty:
+            raise ValueError(f"No data available for {symbol}")
+        
+        results = {}
+        
+        # If no strategies specified, use all available
+        if not strategies:
+            strategies = ['btc_ny_session', 'liquidity_sweep_reversal', 'volume_weighted_trend_continuation', 
+                         'volatility_expansion_breakout', 'daily_avwap_zscore_reversion', 
+                         'opening_range_break_retest', 'keltner_exhaustion_fade', 'fakeout_reversion']
+        
+        # Backtest each strategy separately
+        for strategy in strategies:
+            try:
+                logger.info(f"Backtesting {symbol} with strategy: {strategy}")
+                
+                # Generate signals for this specific strategy
+                signals_df = self.generate_signals_with_framework(symbol, days=days, strategies=[strategy])
+                
+                if signals_df is None or (hasattr(signals_df, 'empty') and signals_df.empty) or len(signals_df) == 0:
+                    logger.warning(f"No signals generated for {symbol} with strategy {strategy}")
+                    continue
+                
+                # Execute trades for this strategy
+                result = self._execute_trades_for_strategy(symbol, strategy, signals_df, df, verbose)
+                results[f"{symbol}_{strategy}"] = result
+                
+            except Exception as e:
+                logger.error(f"Error backtesting {symbol} with strategy {strategy}: {e}")
+                continue
+        
+        return results
+    
     def backtest_multiple_symbols(self, symbols: List[str], days: int = 30, 
-                                use_sentiment: bool = False, verbose: bool = False, strategies: List[str] = None) -> Dict[str, BacktestResult]:
-        """Backtest multiple symbols individually"""
+                                 use_sentiment: bool = False, verbose: bool = False,
+                                 strategies: List[str] = None) -> Dict[str, BacktestResult]:
+        """Backtest multiple symbols with multiple strategies"""
+        logger.info(f"Backtesting symbols: {symbols}")
+        
         results = {}
         total_symbols = len(symbols)
         
-        print(f"Starting backtest for {total_symbols} symbols...")
+        # Create progress bar for backtesting
+        pbar = tqdm(total=total_symbols, desc="Backtesting symbols")
         
         for i, symbol in enumerate(symbols):
             if symbol.upper() not in self.available_symbols:
                 logger.warning(f"Symbol {symbol} not available. Available: {self.available_symbols}")
+                pbar.update(1)
                 continue
             
-            print(f"[{i+1}/{total_symbols}] Backtesting {symbol}...")
+            # Update progress bar description
+            pbar.set_description(f"Backtesting {symbol}")
             
             try:
-                result = self.backtest_symbol(symbol, days, use_sentiment, verbose, strategies)
-                results[symbol] = result
-                print(f"[OK] {symbol}: {result.total_return:.2%} return, {result.total_trades} trades")
-                logger.info(f"Completed backtest for {symbol}: {result.total_return:.2%} return")
+                symbol_results = self.backtest_symbol(symbol, days, use_sentiment, verbose, strategies)
+                # symbol_results is now a dict of {strategy_name: BacktestResult}
+                results.update(symbol_results)  # Add all strategy results to main results
+                
+                # Show summary for this symbol
+                if symbol_results:
+                    best_result = max(symbol_results.values(), key=lambda r: r.total_return)
+                    pbar.set_postfix({
+                        "Return": f"{best_result.total_return:.2%}",
+                        "Trades": best_result.total_trades,
+                        "Sharpe": f"{best_result.sharpe_ratio:.2f}"
+                    })
+                    logger.info(f"Completed backtest for {symbol}: {best_result.total_return:.2%} return")
+                else:
+                    pbar.set_postfix({"Return": "0.00%", "Trades": 0, "Sharpe": "0.00"})
+                    logger.info(f"No results for {symbol}")
             except Exception as e:
-                print(f"[ERROR] {symbol}: Error - {e}")
                 logger.error(f"Exception in backtest_symbol for {symbol}: {e}")
                 # Create a dummy result to continue
-                from dataclasses import dataclass
-                @dataclass
-                class DummyResult:
-                    start_date = None
-                    end_date = None
-                    initial_capital = 10000
-                    final_capital = 10000
-                    total_return = 0.0
-                    sharpe_ratio = 0.0
-                    max_drawdown = 0.0
-                    total_trades = 0
-                    win_rate = 0.0
-                    equity_curve = None
-                results[symbol] = DummyResult()
-                continue
-        
-        print(f"Backtest completed for {len(results)} symbols")
-        return results
-    
-    def backtest_portfolio(self, symbols: List[str], days: int = 30, 
-                          use_sentiment: bool = False, equal_weight: bool = True, strategies: List[str] = None) -> PortfolioResult:
-        """Backtest a portfolio of symbols with rebalancing"""
-        logger.info(f"Backtesting portfolio: {symbols} ({'sentiment-enhanced' if use_sentiment else 'original'} strategy)")
-        
-        # Load data for all symbols
-        symbol_data = {}
-        for symbol in symbols:
-            if symbol.upper() not in self.available_symbols:
-                logger.warning(f"Symbol {symbol} not available")
-                continue
-            df = self.load_symbol_data(symbol, days)
-            if not df.empty:
-                symbol_data[symbol.upper()] = df
-        
-        if not symbol_data:
-            raise ValueError("No valid symbol data available")
-        
-        # Find common date range
-        start_dates = [df.index.min() for df in symbol_data.values()]
-        end_dates = [df.index.max() for df in symbol_data.values()]
-        common_start = max(start_dates)
-        common_end = min(end_dates)
-        
-        # Filter all data to common range
-        for symbol in symbol_data:
-            symbol_data[symbol] = symbol_data[symbol][
-                (symbol_data[symbol].index >= common_start) & 
-                (symbol_data[symbol].index <= common_end)
-            ]
-        
-        # Generate signals for all symbols
-        symbol_signals = {}
-        for symbol, df in symbol_data.items():
-            signals = self.generate_signals_for_symbol(df, symbol, use_sentiment=use_sentiment)
-            symbol_signals[symbol] = signals
-        
-        # Portfolio execution with rebalancing
-        portfolio_equity = []
-        rebalance_dates = []
-        individual_results = {}
-        
-        # Initialize portfolio
-        capital_per_symbol = self.initial_capital / len(symbol_data)
-        symbol_positions = {symbol: 0 for symbol in symbol_data.keys()}
-        symbol_capital = {symbol: capital_per_symbol for symbol in symbol_data.keys()}
-        
-        # Get all unique timestamps
-        all_timestamps = set()
-        for signals in symbol_signals.values():
-            all_timestamps.update(signals['timestamp'].tolist())
-        all_timestamps = sorted(list(all_timestamps))
-        
-        # Add initial portfolio value
-        portfolio_equity.append(self.initial_capital)
-        
-        for timestamp in all_timestamps:
-            # Check if we should rebalance (daily)
-            if len(portfolio_equity) == 1 or timestamp.date() != all_timestamps[all_timestamps.index(timestamp)-1].date():
-                rebalance_dates.append(timestamp)
-                
-                # Rebalance portfolio
-                total_value = sum(
-                    symbol_capital[symbol] + (symbol_positions[symbol] * 
-                    symbol_data[symbol][symbol_data[symbol].index <= timestamp]['close'].iloc[-1])
-                    for symbol in symbol_data.keys()
+                dummy_result = BacktestResult(
+                    symbol=symbol,
+                    strategy="error",
+                    total_return=0.0,
+                    annualized_return=0.0,
+                    sharpe_ratio=0.0,
+                    max_drawdown=0.0,
+                    win_rate=0.0,
+                    total_trades=0,
+                    profit_factor=0.0,
+                    equity_curve=pd.Series([self.initial_capital]),
+                    trades=[],
+                    start_date=datetime.now(),
+                    end_date=datetime.now(),
+                    initial_capital=self.initial_capital,
+                    final_capital=self.initial_capital,
+                    rolling_sharpe=None,
+                    segmented_performance=None,
+                    regime_performance=None,
+                    optimal_conditions=None
                 )
-                
-                if equal_weight:
-                    target_value_per_symbol = total_value / len(symbol_data)
-                    for symbol in symbol_data.keys():
-                        current_price = symbol_data[symbol][symbol_data[symbol].index <= timestamp]['close'].iloc[-1]
-                        current_value = symbol_capital[symbol] + (symbol_positions[symbol] * current_price)
-                        
-                        if current_value < target_value_per_symbol:
-                            # Buy more
-                            additional_capital = target_value_per_symbol - current_value
-                            if additional_capital > 0:
-                                shares_to_buy = additional_capital / current_price
-                                symbol_positions[symbol] += shares_to_buy
-                                symbol_capital[symbol] -= additional_capital
-                        elif current_value > target_value_per_symbol:
-                            # Sell some
-                            excess_value = current_value - target_value_per_symbol
-                            shares_to_sell = excess_value / current_price
-                            symbol_positions[symbol] = max(0, symbol_positions[symbol] - shares_to_sell)
-                            symbol_capital[symbol] += excess_value
+                results[f"{symbol}_error"] = dummy_result
+                pbar.set_postfix({"Error": str(e)[:20]})
             
-            # Execute individual symbol trades based on signals
-            for symbol, signals in symbol_signals.items():
-                symbol_signals_at_time = signals[signals['timestamp'] == timestamp]
-                if not symbol_signals_at_time.empty:
-                    signal = symbol_signals_at_time.iloc[0]
-                    current_price = signal['price']
-                    action = signal['action']
-                    
-                    if action == 'BUY' and symbol_positions[symbol] == 0 and symbol_capital[symbol] > current_price:
-                        shares = symbol_capital[symbol] / current_price
-                        symbol_positions[symbol] = shares
-                        symbol_capital[symbol] = 0
-                    elif action == 'SELL' and symbol_positions[symbol] > 0:
-                        symbol_capital[symbol] = symbol_positions[symbol] * current_price
-                        symbol_positions[symbol] = 0
-            
-            # Calculate total portfolio value
-            total_value = sum(
-                symbol_capital[symbol] + (symbol_positions[symbol] * 
-                symbol_data[symbol][symbol_data[symbol].index <= timestamp]['close'].iloc[-1])
-                for symbol in symbol_data.keys()
-            )
-            portfolio_equity.append(total_value)
+            pbar.update(1)
         
-        # Calculate portfolio metrics
-        # Ensure lengths match by trimming portfolio_equity to match timestamps
-        min_length = min(len(portfolio_equity), len(all_timestamps))
-        portfolio_equity_series = pd.Series(portfolio_equity[:min_length], index=all_timestamps[:min_length])
-        total_return = (portfolio_equity_series.iloc[-1] - self.initial_capital) / self.initial_capital
-        days_traded = (all_timestamps[-1] - all_timestamps[0]).days
-        annualized_return = (1 + total_return) ** (365 / days_traded) - 1 if days_traded > 0 else 0
-        
-        returns = portfolio_equity_series.pct_change().dropna()
-        sharpe_ratio = returns.mean() / returns.std() * np.sqrt(252) if returns.std() > 0 else 0
-        
-        rolling_max = portfolio_equity_series.expanding().max()
-        drawdown = (portfolio_equity_series - rolling_max) / rolling_max
-        max_drawdown = drawdown.min()
-        
-        # Calculate correlation matrix
-        symbol_returns = {}
-        for symbol, df in symbol_data.items():
-            symbol_returns[symbol] = df['close'].pct_change().dropna()
-        
-        correlation_matrix = pd.DataFrame(symbol_returns).corr()
-        
-        return PortfolioResult(
-            symbols=list(symbol_data.keys()),
-            strategy='sentiment_enhanced' if use_sentiment else 'original',
-            total_return=total_return,
-            annualized_return=annualized_return,
-            sharpe_ratio=sharpe_ratio,
-            max_drawdown=max_drawdown,
-            correlation_matrix=correlation_matrix,
-            individual_results={},  # Will be populated separately
-            portfolio_equity_curve=portfolio_equity_series,
-            rebalance_dates=rebalance_dates
-        )
+        pbar.close()
+        logger.info(f"Backtest completed for {len(results)} symbols")
+        return results
     
     def create_comparative_report(self, results: Dict[str, BacktestResult], 
                                 portfolio_result: Optional[PortfolioResult] = None,
                                 output_dir: str = "backtests/results") -> str:
-        """Create comprehensive comparative report"""
+        """Create comprehensive comparative report using professional architecture"""
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        # Create summary table
-        summary_data = []
-        for symbol, result in results.items():
-            summary_data.append({
-                'Symbol': symbol,
-                'Strategy': result.strategy,
-                'Total Return': f"{result.total_return:.2%}",
-                'Annualized Return': f"{result.annualized_return:.2%}",
-                'Sharpe Ratio': f"{result.sharpe_ratio:.2f}",
-                'Max Drawdown': f"{result.max_drawdown:.2%}",
-                'Win Rate': f"{result.win_rate:.2%}",
-                'Total Trades': result.total_trades,
-                'Profit Factor': f"{result.profit_factor:.2f}",
-                'Final Capital': f"${result.final_capital:,.2f}"
-            })
+        # Convert BacktestResult objects to EquityCurve objects
+        curves = []
+        for key, result in results.items():
+            # Extract symbol and strategy from key
+            if '_' in key:
+                symbol = key.split('_')[0]
+                strategy = '_'.join(key.split('_')[1:])
+            else:
+                symbol = key
+                strategy = getattr(result, 'strategy', 'unknown')
+            
+            curve = EquityCurveFactory.from_backtest_result(result, symbol, strategy)
+            curves.append(curve)
         
-        summary_df = pd.DataFrame(summary_data)
-        
-        # Create visualizations
-        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-        fig.suptitle('Multi-Symbol Backtest Results', fontsize=16, fontweight='bold')
-        
-        # 1. Equity curves comparison
-        ax1 = axes[0, 0]
-        for symbol, result in results.items():
-            normalized_equity = result.equity_curve / result.initial_capital
-            ax1.plot(normalized_equity.index, normalized_equity.values, 
-                    label=f"{symbol} ({result.strategy})", linewidth=2)
-        
+        # Add portfolio curve if available
         if portfolio_result:
-            normalized_portfolio = portfolio_result.portfolio_equity_curve / self.initial_capital
-            ax1.plot(normalized_portfolio.index, normalized_portfolio.values, 
-                    label="Portfolio (Equal Weight)", linewidth=3, linestyle='--', alpha=0.8)
+            portfolio_curve = EquityCurve(
+                id="portfolio_equal_weight",
+                symbol="PORTFOLIO",
+                strategy="equal_weight",
+                timestamps=portfolio_result.portfolio_equity_curve.index.values,
+                equity=portfolio_result.portfolio_equity_curve.values,
+                returns=np.diff(portfolio_result.portfolio_equity_curve.values) / portfolio_result.portfolio_equity_curve.values[:-1],
+                trades=[],
+                meta={'portfolio': True, 'initial_capital': self.initial_capital}
+            )
+            curves.append(portfolio_curve)
         
-        ax1.set_title('Equity Curves Comparison')
-        ax1.set_xlabel('Date')
-        ax1.set_ylabel('Normalized Value')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
+        # Create professional report
+        config = ReportConfig(
+            equity=True,
+            rolling_sharpe=True,
+            drawdown=True,
+            segmented_performance=True,
+            regime_performance=True,
+            rolling_window_percentages=[0.01, 0.03, 0.07]
+        )
         
-        # 2. Returns comparison
-        ax2 = axes[0, 1]
-        symbols = list(results.keys())
-        returns = [results[symbol].total_return for symbol in symbols]
-        colors = ['green' if r > 0 else 'red' for r in returns]
+        report_generator = ReportGenerator(curves, config)
+        report_path = report_generator.generate_report(f"{output_path}/professional_report_{timestamp}.png")
         
-        bars = ax2.bar(symbols, returns, color=colors, alpha=0.7)
-        ax2.set_title('Total Returns by Symbol')
-        ax2.set_ylabel('Total Return')
-        ax2.tick_params(axis='x', rotation=45)
+        # Also create a summary report
+        summary = report_generator.generate_summary_report()
         
-        # Add value labels on bars
-        for bar, ret in zip(bars, returns):
-            height = bar.get_height()
-            ax2.text(bar.get_x() + bar.get_width()/2., height + (0.01 if height > 0 else -0.01),
-                    f'{ret:.1%}', ha='center', va='bottom' if height > 0 else 'top')
+        # Save summary as JSON
+        summary_path = f"{output_path}/summary_{timestamp}.json"
+        with open(summary_path, 'w') as f:
+            json.dump(summary, f, indent=2, default=str)
         
-        # 3. Risk metrics
-        ax3 = axes[1, 0]
-        sharpe_ratios = [results[symbol].sharpe_ratio for symbol in symbols]
-        max_drawdowns = [abs(results[symbol].max_drawdown) for symbol in symbols]
+        logger.info(f"Professional report saved to: {report_path}")
+        logger.info(f"Summary saved to: {summary_path}")
         
-        x = np.arange(len(symbols))
-        width = 0.35
-        
-        ax3.bar(x - width/2, sharpe_ratios, width, label='Sharpe Ratio', alpha=0.7)
-        ax3_twin = ax3.twinx()
-        ax3_twin.bar(x + width/2, max_drawdowns, width, label='Max Drawdown', alpha=0.7, color='red')
-        
-        ax3.set_title('Risk Metrics')
-        ax3.set_xlabel('Symbol')
-        ax3.set_ylabel('Sharpe Ratio')
-        ax3_twin.set_ylabel('Max Drawdown')
-        ax3.set_xticks(x)
-        ax3.set_xticklabels(symbols)
-        ax3.legend(loc='upper left')
-        ax3_twin.legend(loc='upper right')
-        
-        # 4. Correlation heatmap (if portfolio result available)
-        ax4 = axes[1, 1]
-        if portfolio_result and len(portfolio_result.correlation_matrix) > 1:
-            sns.heatmap(portfolio_result.correlation_matrix, annot=True, cmap='coolwarm', 
-                       center=0, ax=ax4, cbar_kws={'shrink': 0.8})
-            ax4.set_title('Symbol Correlation Matrix')
-        else:
-            # Show win rates instead
-            win_rates = [results[symbol].win_rate for symbol in symbols]
-            ax4.bar(symbols, win_rates, alpha=0.7, color='skyblue')
-            ax4.set_title('Win Rates by Symbol')
-            ax4.set_ylabel('Win Rate')
-            ax4.tick_params(axis='x', rotation=45)
-        
-        plt.tight_layout()
-        
-        # Save plot
-        plot_path = output_path / f"multi_symbol_backtest_{timestamp}.png"
-        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        # Create markdown report
-        report_path = output_path / f"multi_symbol_backtest_{timestamp}.md"
-        
-        with open(report_path, 'w') as f:
-            f.write(f"# Multi-Symbol Crypto Backtest Report\n\n")
-            f.write(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-            f.write(f"**Symbols:** {', '.join(symbols)}\n\n")
-            f.write(f"**Initial Capital:** ${self.initial_capital:,.2f}\n\n")
-            f.write(f"**Strategy:** {'Sentiment-Enhanced' if any(r.strategy == 'sentiment_enhanced' for r in results.values()) else 'Original'}\n\n")
-            
-            f.write("## Summary Table\n\n")
-            f.write(summary_df.to_markdown(index=False))
-            f.write("\n\n")
-            
-            f.write("## Key Insights\n\n")
-            
-            # Best performing symbol
-            best_symbol = max(results.keys(), key=lambda s: results[s].total_return)
-            f.write(f"- **Best Performer:** {best_symbol} ({results[best_symbol].total_return:.2%} return)\n")
-            
-            # Worst performing symbol
-            worst_symbol = min(results.keys(), key=lambda s: results[s].total_return)
-            f.write(f"- **Worst Performer:** {worst_symbol} ({results[worst_symbol].total_return:.2%} return)\n")
-            
-            # Average metrics
-            avg_return = np.mean([r.total_return for r in results.values()])
-            avg_sharpe = np.mean([r.sharpe_ratio for r in results.values()])
-            avg_drawdown = np.mean([abs(r.max_drawdown) for r in results.values()])
-            
-            f.write(f"- **Average Return:** {avg_return:.2%}\n")
-            f.write(f"- **Average Sharpe Ratio:** {avg_sharpe:.2f}\n")
-            f.write(f"- **Average Max Drawdown:** {avg_drawdown:.2%}\n\n")
-            
-            if portfolio_result:
-                f.write("## Portfolio Analysis\n\n")
-                f.write(f"- **Portfolio Return:** {portfolio_result.total_return:.2%}\n")
-                f.write(f"- **Portfolio Sharpe Ratio:** {portfolio_result.sharpe_ratio:.2f}\n")
-                f.write(f"- **Portfolio Max Drawdown:** {portfolio_result.max_drawdown:.2%}\n\n")
-            
-            f.write("## Files Generated\n\n")
-            f.write(f"- **Plot:** `{plot_path.name}`\n")
-            f.write(f"- **Report:** `{report_path.name}`\n\n")
-        
-        logger.info(f"Comparative report saved to: {report_path}")
-        return str(report_path)
+        return report_path
 
 def main():
     """Main function for command-line usage"""
@@ -702,45 +693,29 @@ def main():
     parser.add_argument('--symbols', nargs='+', required=True, 
                        help='Symbols to backtest (e.g., BTC ETH ADA)')
     parser.add_argument('--strategies', nargs='*', default=None,
-                       help='Strategies to use. Default: all available strategies')
+                       help='Strategies to use (default: all available)')
     parser.add_argument('--days', type=int, default=30, 
                        help='Number of days to backtest (default: 30)')
-    parser.add_argument('--capital', type=float, default=10000.0, 
-                       help='Initial capital (default: 10000)')
-    parser.add_argument('--alpha', type=float, default=0.5, 
-                       help='Sentiment alpha parameter (default: 0.5)')
+    parser.add_argument('--capital', type=float, default=100000,
+                       help='Initial capital (default: 100000)')
     parser.add_argument('--sentiment', action='store_true', 
-                       help='Use sentiment-enhanced strategy')
+                       help='Use sentiment-enhanced strategies')
+    parser.add_argument('--verbose', action='store_true',
+                       help='Show verbose output with all trades')
     parser.add_argument('--portfolio', action='store_true', 
                        help='Run portfolio backtest with rebalancing')
-    parser.add_argument('--verbose', action='store_true', 
-                       help='Verbose output showing all trades')
     parser.add_argument('--output-dir', default='backtests/results', 
-                       help='Output directory for results')
+                       help='Output directory for reports')
     
     args = parser.parse_args()
     
-    # Create backtester
-    backtester = MultiSymbolBacktester(
-        initial_capital=args.capital,
-        alpha=args.alpha
-    )
-    
-    print(f"Available symbols: {backtester.available_symbols}")
-    print(f"Requested symbols: {args.symbols}")
-    
-    # Validate symbols
-    valid_symbols = [s.upper() for s in args.symbols if s.upper() in backtester.available_symbols]
-    if not valid_symbols:
-        print("No valid symbols found!")
-        return
-    
-    print(f"Backtesting symbols: {valid_symbols}")
-    
     try:
+        # Initialize backtester
+        backtester = MultiSymbolBacktester(initial_capital=args.capital)
+        
         # Run individual symbol backtests
         results = backtester.backtest_multiple_symbols(
-            valid_symbols, 
+            symbols=args.symbols,
             days=args.days, 
             use_sentiment=args.sentiment,
             verbose=args.verbose,
@@ -749,20 +724,17 @@ def main():
         
         # Run portfolio backtest if requested
         portfolio_result = None
-        if args.portfolio and len(valid_symbols) > 1:
+        if args.portfolio and len(args.symbols) > 1:
+            logger.info("Running portfolio backtest...")
             portfolio_result = backtester.backtest_portfolio(
-                valid_symbols,
+                symbols=args.symbols,
                 days=args.days,
                 use_sentiment=args.sentiment,
                 strategies=args.strategies
             )
         
         # Generate report
-        report_path = backtester.create_comparative_report(
-            results, 
-            portfolio_result,
-            args.output_dir
-        )
+        report_path = backtester.create_comparative_report(results, portfolio_result, args.output_dir)
         
         print(f"\nBacktest completed! Report saved to: {report_path}")
         
@@ -771,12 +743,24 @@ def main():
         print("BACKTEST SUMMARY")
         print("="*80)
         
-        for symbol, result in results.items():
+        # Group results by symbol for summary
+        symbol_summaries = {}
+        for key, result in results.items():
+            if '_' in key:
+                symbol = key.split('_')[0]
+                strategy = '_'.join(key.split('_')[1:])
+            else:
+                symbol = key
+                strategy = "unknown"
+            
+            if symbol not in symbol_summaries:
+                symbol_summaries[symbol] = []
+            symbol_summaries[symbol].append((strategy, result))
+        
+        for symbol, strategy_results in symbol_summaries.items():
             print(f"\n{symbol.upper()}:")
-            print(f"  Return: {result.total_return:.2%}")
-            print(f"  Sharpe: {result.sharpe_ratio:.2f}")
-            print(f"  Max DD: {result.max_drawdown:.2%}")
-            print(f"  Trades: {result.total_trades}")
+            for strategy, result in strategy_results:
+                print(f"  {strategy}: Return={result.total_return:.2%}, Sharpe={result.sharpe_ratio:.2f}, DD={result.max_drawdown:.2%}, Trades={result.total_trades}")
         
         if portfolio_result:
             print(f"\nPORTFOLIO:")

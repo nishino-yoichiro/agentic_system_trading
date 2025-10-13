@@ -54,38 +54,41 @@ def main():
     else:
         strategies = available_strategies  # Default to all strategies
     
-    # Get other parameters
-    days = input("Days to backtest (default 30): ").strip()
-    days = int(days) if days.isdigit() else 30
+    # Get days
+    days_input = input("Enter days to backtest (default: 30): ").strip()
+    days = int(days_input) if days_input else 30
     
-    capital = input("Initial capital (default 10000): ").strip()
-    capital = float(capital) if capital.replace('.', '').isdigit() else 10000.0
+    # Get sentiment option
+    sentiment_input = input("Use sentiment-enhanced strategy? (y/n, default: n): ").strip().lower()
+    use_sentiment = sentiment_input in ['y', 'yes']
     
-    use_sentiment = input("Use sentiment-enhanced strategy? (y/n, default n): ").strip().lower() == 'y'
+    # Get verbose option
+    verbose_input = input("Show verbose output with all trades? (y/n, default: n): ").strip().lower()
+    verbose = verbose_input in ['y', 'yes']
     
-    run_portfolio = input("Run portfolio backtest? (y/n, default n): ").strip().lower() == 'y'
-    
-    verbose = input("Verbose output? (y/n, default n): ").strip().lower() == 'y'
+    # Get portfolio option
+    portfolio_input = input("Run portfolio backtest with rebalancing? (y/n, default: y): ").strip().lower()
+    run_portfolio = portfolio_input not in ['n', 'no']  # Default to yes
     
     # Build command
     cmd = [
-        sys.executable, str(Path(__file__).parent / 'multi_symbol_backtester.py'),
-        '--symbols'] + symbols + [
-        '--strategies'] + strategies + [
-        '--days', str(days),
-        '--capital', str(capital)
+        sys.executable,
+        "scripts/backtesting/multi_symbol_backtester.py",
+        "--symbols"] + symbols + [
+        "--strategies"] + strategies + [
+        "--days", str(days),
+        "--output-dir", "backtests/results"
     ]
     
+    # Add optional flags
     if use_sentiment:
-        cmd.append('--sentiment')
-    
-    if run_portfolio:
-        cmd.append('--portfolio')
-    
+        cmd.append("--sentiment")
     if verbose:
-        cmd.append('--verbose')
+        cmd.append("--verbose")
+    if run_portfolio:
+        cmd.append("--portfolio")
     
-    print(f"\nRunning command: {' '.join(cmd)}")
+    print(f"\nRunning: {' '.join(cmd)}")
     print("=" * 50)
     
     # Run the backtest
@@ -95,7 +98,7 @@ def main():
     except subprocess.CalledProcessError as e:
         print(f"\n❌ Backtest failed with exit code {e.returncode}")
     except KeyboardInterrupt:
-        print("\n⏹️ Backtest interrupted by user")
+        print("\n⚠️ Backtest interrupted by user")
 
 if __name__ == "__main__":
     main()

@@ -12,8 +12,13 @@ from pathlib import Path
 import logging
 from loguru import logger
 
-from .crypto_analysis_engine import CryptoAnalysisEngine
-from .data_ingestion.news_collector import NewsCollector
+try:
+    from .crypto_analysis_engine import CryptoAnalysisEngine
+    from .data_ingestion.news_collector import NewsCollector
+except ImportError:
+    # Fallback for when running as script
+    from crypto_analysis_engine import CryptoAnalysisEngine
+    from data_ingestion.news_collector import NewsCollector
 
 class CryptoSentimentGenerator:
     """Unified sentiment-enhanced signal generator for all crypto assets"""

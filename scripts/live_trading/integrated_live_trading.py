@@ -277,7 +277,7 @@ class IntegratedLiveTrading:
             logger.info("Generating signals...")
             signals = self.signal_integration.generate_signals(
                 symbols=self.symbols,
-                days=1095  # Use 3 years of data for maximum strategy effectiveness
+                days=180  # Use 6 months for live trading (good balance of data vs speed)
             )
             
             if not signals:
@@ -287,9 +287,43 @@ class IntegratedLiveTrading:
             # Process each signal
             for signal in signals:
                 self._execute_signal(signal)
+            
+            # Save recent signals for monitoring
+            self._save_recent_signals(signals)
                 
         except Exception as e:
             logger.error(f"Error generating signals: {e}")
+    
+    def _save_recent_signals(self, signals: List[Dict]):
+        """Save recent signals for monitoring"""
+        try:
+            signals_file = self.data_dir / "recent_signals.json"
+            
+            # Group signals by symbol
+            signal_analysis = {}
+            for symbol in self.symbols:
+                symbol_signals = [s for s in signals if s['symbol'] == symbol]
+                
+                if symbol_signals:
+                    signal_analysis[symbol] = {
+                        'has_signals': True,
+                        'signals': symbol_signals,
+                        'signal_count': len(symbol_signals),
+                        'timestamp': datetime.now().isoformat()
+                    }
+                else:
+                    signal_analysis[symbol] = {
+                        'has_signals': False,
+                        'reason': 'No signals generated this cycle',
+                        'timestamp': datetime.now().isoformat()
+                    }
+            
+            # Save to file
+            with open(signals_file, 'w') as f:
+                json.dump(signal_analysis, f, indent=2)
+                
+        except Exception as e:
+            logger.error(f"Error saving recent signals: {e}")
     
     def _execute_signal(self, signal: Dict):
         """Execute a trading signal"""

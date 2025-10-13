@@ -14,6 +14,8 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional, Callable
 from dataclasses import dataclass
 from enum import Enum
+from datetime import datetime
+from collections import deque
 import logging
 from scipy import stats
 from scipy.optimize import minimize
@@ -23,6 +25,50 @@ warnings.filterwarnings('ignore')
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+class StrategyType(Enum):
+    """Strategy runtime categories for efficient data access"""
+    CONSTANT_TIME = 1      # Only needs current row (e.g., time-based)
+    FIXED_LOOKBACK = 2     # Needs fixed number of past bars (e.g., ATR, MA)
+    FULL_CONTEXT = 3       # Needs full historical context (e.g., complex patterns)
+
+@dataclass
+class StrategyMetadata:
+    """Strategy data requirements and configuration"""
+    lookback: int = 0                    # Number of past bars needed
+    fields_required: List[str] = None   # Subset of columns needed
+    strategy_type: StrategyType = StrategyType.CONSTANT_TIME
+    batch_mode: bool = False            # True if needs full context
+    min_confidence: float = 0.0         # Minimum confidence threshold
+    vol_target: float = 0.10            # Volatility target
+    
+    def __post_init__(self):
+        if self.fields_required is None:
+            self.fields_required = ["close", "timestamp"]
+
+class BaseStrategy:
+    """Base class for all trading strategies with metadata interface"""
+    
+    def __init__(self, name: str, metadata: StrategyMetadata):
+        self.name = name
+        self.metadata = metadata
+        
+    def generate_signal(self, current_row: pd.Series, history: Optional[pd.DataFrame] = None) -> Optional['Signal']:
+        """
+        Generate trading signal based on current data and optional history
+        
+        Args:
+            current_row: Current market data row
+            history: Historical data (only provided if strategy needs it)
+            
+        Returns:
+            Signal object or None
+        """
+        raise NotImplementedError("Subclasses must implement generate_signal")
+    
+    def get_data_requirements(self) -> StrategyMetadata:
+        """Return strategy's data requirements"""
+        return self.metadata
 
 class SignalType(Enum):
     LONG = 1
@@ -35,26 +81,26 @@ class RegimeType(Enum):
     RANGE = "range"
     HIGH_VOL = "high_vol"
     LOW_VOL = "low_vol"
-    ASIA_SESSION = "asia"
-    LONDON_SESSION = "london"
-    NY_SESSION = "ny"
+    ASIA_SESSION = "asia_session"
+    LONDON_SESSION = "london_session"
+    NY_SESSION = "ny_session"
 
 @dataclass
 class Signal:
     """Trading signal with metadata"""
     signal_type: SignalType
-    confidence: float  # 0-1
+    confidence: float
     entry_price: float
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
     reason: str = ""
-    timestamp: pd.Timestamp = None
+    risk_size: float = 0.0
     strategy_name: str = ""
-    risk_size: float = 0.0  # Position size as fraction of capital
+    timestamp: Optional[datetime] = None
 
 @dataclass
 class StrategyConfig:
-    """Configuration for a trading strategy"""
+    """Configuration for trading strategies"""
     name: str
     symbol: str
     mechanism: str
@@ -65,44 +111,234 @@ class StrategyConfig:
     min_confidence: float = 0.6  # Minimum confidence to trade
     regime_filters: List[RegimeType] = None
 
-class CryptoSignalFramework:
-    """
-    Main framework for crypto trading signals with orthogonal strategies
-    """
+class SlidingWindowBuffer:
+    """Memory-efficient sliding window buffer for strategy data"""
     
-    def __init__(self, initial_capital: float = 100000):
-        self.initial_capital = initial_capital
-        self.current_capital = initial_capital
+    def __init__(self, max_lookback: int):
+        self.max_lookback = max_lookback
+        self.buffer = deque(maxlen=max_lookback + 1)
+        self.timestamps = deque(maxlen=max_lookback + 1)
+        
+    def add(self, row: pd.Series):
+        """Add new data point to buffer"""
+        self.buffer.append(row)
+        self.timestamps.append(row.name)  # Store timestamp
+        
+    def get_history(self, lookback: int) -> Optional[pd.DataFrame]:
+        """Get historical data for specified lookback period"""
+        if len(self.buffer) < lookback:
+            return None
+            
+        # Get last 'lookback' rows
+        recent_data = list(self.buffer)[-lookback:]
+        recent_timestamps = list(self.timestamps)[-lookback:]
+        
+        # Convert to DataFrame
+        return pd.DataFrame(recent_data, index=recent_timestamps)
+    
+    def get_current(self) -> Optional[pd.Series]:
+        """Get current data point"""
+        return self.buffer[-1] if self.buffer else None
+    
+    def is_ready(self, lookback: int) -> bool:
+        """Check if buffer has enough data for lookback"""
+        return len(self.buffer) >= lookback
+
+class SignalFramework:
+    """Professional-grade signal framework with strategy metadata and sliding windows"""
+    
+    def __init__(self, max_lookback: int = 100):
+        self.max_lookback = max_lookback
         self.strategies = {}
+        self.buffers = {}  # symbol -> SlidingWindowBuffer
         self.signal_history = []
         self.portfolio_weights = {}
-        self.correlation_matrix = None
         self.regime_state = {}
+        self.correlation_matrix = None
         
         # Risk management parameters
-        self.max_correlation = 0.5
-        self.correlation_surge_threshold = 0.6
-        self.max_drawdown_threshold = 0.20
-        self.vol_target = 0.10
+        self.max_drawdown_threshold = -0.15
+        self.correlation_surge_threshold = 0.7
         
-        # Execution controls
-        self.max_concurrent_trades = 3
-        self.min_bar_separation = 5
-        self.active_trades = {}
+    def add_strategy(self, strategy: BaseStrategy):
+        """Add a strategy with its metadata"""
+        self.strategies[strategy.name] = strategy
+        logger.info(f"Added strategy: {strategy.name} (type: {strategy.metadata.strategy_type.name})")
         
-    def add_strategy(self, config: StrategyConfig, signal_function: Callable):
-        """Add a trading strategy to the framework"""
-        self.strategies[config.name] = {
-            'config': config,
-            'function': signal_function,
-            'returns': [],
-            'sharpe': 0.0,
-            'max_dd': 0.0,
-            'hit_rate': 0.0
-        }
-        logger.info(f"Added strategy: {config.name} for {config.symbol}")
+    def generate_signals(self, data: Dict[str, pd.DataFrame], progress_bar=None, strategies: List[str] = None) -> List['Signal']:
+        """
+        Generate signals using strategy metadata and sliding window buffers
+        
+        This is the core optimization - O(n) complexity instead of O(n²)
+        """
+        all_signals = []
+        
+        # Initialize buffers for each symbol
+        for symbol, symbol_data in data.items():
+            self.buffers[symbol] = SlidingWindowBuffer(self.max_lookback)
+        
+        # Calculate allocation weights
+        weights = self.calculate_allocation_weights()
+        
+        # Filter strategies if specified
+        strategies_to_process = strategies if strategies else list(self.strategies.keys())
+        
+        for name, strategy in self.strategies.items():
+            # Only process requested strategies
+            if name not in strategies_to_process:
+                continue
+            metadata = strategy.get_data_requirements()
+            
+            # Find matching symbol data
+            symbol_data = None
+            symbol = None
+            for sym, df in data.items():
+                if len(df) >= metadata.lookback + 1:  # Need at least lookback + current
+                    symbol_data = df
+                    symbol = sym
+                    break
+            
+            if symbol_data is None:
+                logger.warning(f"No suitable data found for strategy {name}")
+                continue
+            
+            buffer = self.buffers[symbol]
+            
+            logger.info(f"Processing {name} with {metadata.strategy_type.name} access pattern")
+            
+            # Process data based on strategy type
+            if metadata.strategy_type == StrategyType.CONSTANT_TIME:
+                # Only process relevant timestamps for constant-time strategies
+                relevant_timestamps = self._get_relevant_timestamps(symbol_data, name)
+                
+                if progress_bar:
+                    progress_bar.set_description(f"Processing {name} (constant-time)")
+                    progress_bar.update(len(relevant_timestamps))
+                
+                for timestamp in relevant_timestamps:
+                    try:
+                        current_row = symbol_data.loc[timestamp]
+                        buffer.add(current_row)
+                        
+                        # Detect regime using recent data
+                        regime_data = symbol_data.tail(50)
+                        regime = self.detect_regime(regime_data, symbol)
+                        
+                        # Generate signal
+                        signal = strategy.generate_signal(current_row, None)
+                        if signal and signal.confidence >= metadata.min_confidence:
+                            signal = self._apply_risk_management(signal, metadata, weights.get(name, 0.0), regime_data)
+                            signal.strategy_name = name
+                            signal.timestamp = timestamp
+                            all_signals.append(signal)
+                            
+                    except Exception as e:
+                        logger.error(f"Error generating signal for {name} at {timestamp}: {e}")
+                        continue
+                        
+            elif metadata.strategy_type == StrategyType.FIXED_LOOKBACK:
+                # Use sliding window for fixed lookback strategies
+                iteration_range = range(metadata.lookback, len(symbol_data))
+                
+                if progress_bar:
+                    progress_bar.set_description(f"Processing {name} (fixed lookback: {metadata.lookback})")
+                    for i in iteration_range:
+                        if i % 100 == 0:
+                            progress_bar.set_postfix({"Strategy": name, "Signals": len(all_signals)})
+                            progress_bar.update(100)
+                        
+                        try:
+                            current_row = symbol_data.iloc[i]
+                            buffer.add(current_row)
+                            
+                            if buffer.is_ready(metadata.lookback):
+                                history = buffer.get_history(metadata.lookback)
+                                regime = self.detect_regime(history, symbol)
+                                
+                                signal = strategy.generate_signal(current_row, history)
+                                if signal and signal.confidence >= metadata.min_confidence:
+                                    signal = self._apply_risk_management(signal, metadata, weights.get(name, 0.0), history)
+                                    signal.strategy_name = name
+                                    signal.timestamp = current_row.name
+                                    all_signals.append(signal)
+                                    
+                        except Exception as e:
+                            logger.error(f"Error generating signal for {name} at {current_row.name}: {e}")
+                            continue
+                
+                # Update progress bar for remaining iterations
+                remaining = len(iteration_range) % 100
+                if remaining > 0:
+                    progress_bar.update(remaining)
+                    
+            elif metadata.strategy_type == StrategyType.FULL_CONTEXT:
+                # Full context strategies (legacy support)
+                iteration_range = range(50, len(symbol_data))
+                
+                if progress_bar:
+                    progress_bar.set_description(f"Processing {name} (full context)")
+                    for i in iteration_range:
+                        if i % 100 == 0:
+                            progress_bar.set_postfix({"Strategy": name, "Signals": len(all_signals)})
+                            progress_bar.update(100)
+                        
+                        try:
+                            current_row = symbol_data.iloc[i]
+                            buffer.add(current_row)
+                            
+                            # Provide full context (but avoid copying)
+                            history = symbol_data.iloc[:i+1]
+                            regime = self.detect_regime(history, symbol)
+                            
+                            signal = strategy.generate_signal(current_row, history)
+                            if signal and signal.confidence >= metadata.min_confidence:
+                                signal = self._apply_risk_management(signal, metadata, weights.get(name, 0.0), history)
+                                signal.strategy_name = name
+                                signal.timestamp = current_row.name
+                                all_signals.append(signal)
+                                
+                        except Exception as e:
+                            logger.error(f"Error generating signal for {name} at {current_row.name}: {e}")
+                            continue
+                
+                # Update progress bar for remaining iterations
+                remaining = len(iteration_range) % 100
+                if remaining > 0:
+                    progress_bar.update(remaining)
+        
+        # Update signal history
+        self.signal_history.extend(all_signals)
+        
+        logger.info(f"Generated {len(all_signals)} signals using optimized framework")
+        return all_signals
     
-    def detect_regime(self, data: pd.DataFrame, symbol: str) -> Dict[RegimeType, bool]:
+    def _apply_risk_management(self, signal: 'Signal', metadata: StrategyMetadata, 
+                              weight: float, data: pd.DataFrame) -> 'Signal':
+        """Apply volatility targeting and risk management"""
+        try:
+            # Apply volatility targeting
+            returns = data['close'].pct_change().dropna()
+            vol_multiplier = self.calculate_volatility_targeting(returns, metadata.vol_target)
+            
+            # Set risk size based on allocation weight
+            signal.risk_size = weight * vol_multiplier
+            
+        except Exception as e:
+            logger.warning(f"Error applying risk management: {e}")
+            signal.risk_size = weight
+            
+        return signal
+    
+    def calculate_allocation_weights(self) -> Dict[str, float]:
+        """Calculate portfolio allocation weights for strategies"""
+        if not self.strategies:
+            return {}
+        
+        # Simple equal weight allocation for now
+        weight_per_strategy = 1.0 / len(self.strategies)
+        return {name: weight_per_strategy for name in self.strategies.keys()}
+    
+    def detect_regime(self, data: pd.DataFrame, symbol: str) -> Dict['RegimeType', bool]:
         """Detect current market regime"""
         if len(data) < 50:
             return {regime: False for regime in RegimeType}
@@ -111,43 +347,22 @@ class CryptoSignalFramework:
         returns = data['close'].pct_change().dropna()
         
         # Use only recent data for regime detection to avoid hanging
-        recent_data = data.tail(100)  # Only use last 100 data points for regime detection
-        recent_returns = recent_data['close'].pct_change().dropna()
+        recent_returns = returns.tail(50)
         
-        if len(recent_returns) < 20:
-            volatility = 0.0
-            vol_percentile = 0.5
-        else:
-            volatility = recent_returns.rolling(20).std().iloc[-1]
-            vol_percentile = (recent_returns.rolling(20).std().rank(pct=True)).iloc[-1]
+        # Volatility regime
+        vol_percentile = recent_returns.rolling(window=20).std().rank(pct=True).iloc[-1]
         
-        # Trend detection using recent data only
-        high = recent_data['high']
-        low = recent_data['low']
-        close = recent_data['close']
+        # Trend regime
+        sma20 = data['close'].rolling(window=20).mean().iloc[-1]
+        sma50 = data['close'].rolling(window=50).mean().iloc[-1]
+        current_price = data['close'].iloc[-1]
         
-        # Simple trend detection (optimized)
-        if len(close) >= 20:
-            sma_20 = close.rolling(20).mean().iloc[-1]
-            price_vs_sma20 = close.iloc[-1] / sma_20
-        else:
-            price_vs_sma20 = 1.0
-            
-        if len(close) >= 50:
-            sma_50 = close.rolling(50).mean().iloc[-1]
-            price_vs_sma50 = close.iloc[-1] / sma_50
-        else:
-            price_vs_sma50 = 1.0
+        price_vs_sma20 = current_price / sma20 if sma20 > 0 else 1.0
+        price_vs_sma50 = current_price / sma50 if sma50 > 0 else 1.0
         
-        # Session detection using data timestamp (not current time)
-        data_timestamp = data.index[-1]
-        if hasattr(data_timestamp, 'tz'):
-            if data_timestamp.tz is None:
-                ny_time = data_timestamp.tz_localize('UTC').tz_convert('America/New_York')
-            else:
-                ny_time = data_timestamp.tz_convert('America/New_York')
-        else:
-            ny_time = data_timestamp
+        # Session detection
+        current_time = data.index[-1]
+        ny_time = current_time.tz_convert('US/Eastern') if hasattr(current_time, 'tz_convert') else current_time
         
         hour = ny_time.hour
         minute = ny_time.minute
@@ -192,233 +407,27 @@ class CryptoSignalFramework:
         vol_multiplier = target_vol / realized_vol
         return np.clip(vol_multiplier, 0.1, 10.0)  # Cap between 0.1x and 10x
     
-    def calculate_correlation_matrix(self) -> np.ndarray:
-        """Calculate correlation matrix between strategies"""
-        if len(self.strategies) < 2:
-            return np.eye(len(self.strategies))
-        
-        strategy_returns = []
-        strategy_names = []
-        
-        for name, strategy in self.strategies.items():
-            if len(strategy['returns']) > 10:  # Need minimum data
-                strategy_returns.append(strategy['returns'])
-                strategy_names.append(name)
-        
-        if len(strategy_returns) < 2:
-            return np.eye(len(self.strategies))
-        
-        # Pad shorter series with zeros
-        max_length = max(len(returns) for returns in strategy_returns)
-        padded_returns = []
-        
-        for returns in strategy_returns:
-            if len(returns) < max_length:
-                padded = np.zeros(max_length)
-                padded[-len(returns):] = returns
-                padded_returns.append(padded)
-            else:
-                padded_returns.append(returns[-max_length:])
-        
-        correlation_matrix = np.corrcoef(padded_returns)
-        self.correlation_matrix = correlation_matrix
-        return correlation_matrix
-    
-    def calculate_allocation_weights(self) -> Dict[str, float]:
-        """Calculate optimal allocation weights using Sharpe tilt and correlation penalty"""
-        if not self.strategies:
-            return {}
-        
-        # Calculate correlation matrix
-        self.calculate_correlation_matrix()
-        
-        # Start with equal weights
-        weights = {name: 1.0 / len(self.strategies) for name in self.strategies.keys()}
-        
-        # Apply Sharpe tilt
-        for name, strategy in self.strategies.items():
-            if strategy['sharpe'] > 0:
-                weights[name] *= max(strategy['sharpe'], 0)
-            else:
-                weights[name] *= 0.1  # Minimal weight for negative Sharpe
-        
-        # Apply correlation penalty
-        if self.correlation_matrix is not None:
-            strategy_names = list(self.strategies.keys())
-            for i, name in enumerate(strategy_names):
-                if i < len(self.correlation_matrix):
-                    avg_correlation = np.mean(np.abs(self.correlation_matrix[i]))
-                    if avg_correlation > 0:
-                        weights[name] /= (1 + avg_correlation)
-        
-        # Check for correlation surge
-        if self.correlation_matrix is not None:
-            avg_correlation = np.mean(np.abs(self.correlation_matrix))
-            if avg_correlation > self.correlation_surge_threshold:
-                logger.warning(f"Correlation surge detected: {avg_correlation:.3f}")
-                for name in weights:
-                    weights[name] *= 0.5  # Halve all weights
-        
-        # Normalize weights
-        total_weight = sum(weights.values())
-        if total_weight > 0:
-            for name in weights:
-                weights[name] /= total_weight
-        
-        # Apply maximum weight cap
-        for name in weights:
-            weights[name] = min(weights[name], self.strategies[name]['config'].max_weight)
-        
-        # Renormalize after capping
-        total_weight = sum(weights.values())
-        if total_weight > 0:
-            for name in weights:
-                weights[name] /= total_weight
-        
-        self.portfolio_weights = weights
-        return weights
-    
-    def generate_signals(self, data: Dict[str, pd.DataFrame]) -> List[Signal]:
-        """Generate signals for all strategies by iterating through each timestamp"""
-        all_signals = []
-        
-        # Calculate allocation weights
-        weights = self.calculate_allocation_weights()
-        
-        # Only log once per call
-        if not hasattr(self, '_logged_strategies'):
-            logger.info(f"Generating signals for {len(self.strategies)} strategies")
-            self._logged_strategies = True
-        
-        for name, strategy in self.strategies.items():
-            config = strategy['config']
-            symbol = config.symbol
-            
-            if symbol not in data:
-                continue
-            
-            symbol_data = data[symbol]
-            if len(symbol_data) < 50:  # Need minimum data
-                continue
-            
-            # Iterate through each timestamp to generate signals
-            for i in range(50, len(symbol_data)):  # Start from index 50 to have enough history
-                # Get data up to current timestamp
-                current_data = symbol_data.iloc[:i+1].copy()
+    def _get_relevant_timestamps(self, symbol_data: pd.DataFrame, strategy_name: str) -> List[datetime]:
+        """Get timestamps where signals might occur for simple strategies"""
+        if strategy_name == 'btc_ny_session':
+            # Only check NY session open/close times
+            relevant_times = []
+            for timestamp in symbol_data.index:
+                # NY market hours (9:30 AM - 4:30 PM ET)
+                ny_open_hour = 9
+                ny_open_minute = 30
+                ny_close_hour = 16
+                ny_close_minute = 30
                 
-                # Detect regime for current data
-                regime = self.detect_regime(current_data, symbol)
-                
-                # Check regime filters
-                if config.regime_filters:
-                    regime_ok = any(regime[filter_regime] for filter_regime in config.regime_filters)
-                    if not regime_ok:
-                        continue
-                
-                # Generate signal for current timestamp
-                try:
-                    signal = strategy['function'](current_data, regime)
-                    if signal and signal.confidence >= config.min_confidence:
-                        # Apply volatility targeting
-                        returns = current_data['close'].pct_change().dropna()
-                        vol_multiplier = self.calculate_volatility_targeting(returns, config.vol_target)
-                        
-                        # Set risk size based on allocation weight
-                        signal.risk_size = weights.get(name, 0.0) * vol_multiplier
-                        signal.strategy_name = name
-                        signal.timestamp = current_data.index[-1]
-                        
-                        all_signals.append(signal)
-                        
-                except Exception as e:
-                    logger.error(f"Error generating signal for {name} at timestamp {current_data.index[-1]}: {e}")
-                    continue
-        
-        # Apply execution controls (temporarily disabled for testing)
-        filtered_signals = all_signals  # self.apply_execution_controls(all_signals)
-        
-        # Update signal history
-        self.signal_history.extend(filtered_signals)
-        
-        return filtered_signals
-    
-    def apply_execution_controls(self, signals: List[Signal]) -> List[Signal]:
-        """Apply execution controls and overlap management"""
-        if not signals:
-            return signals
-        
-        # Sort by confidence (highest first)
-        signals.sort(key=lambda x: x.confidence, reverse=True)
-        
-        filtered_signals = []
-        symbol_trades = {}
-        
-        for signal in signals:
-            symbol = signal.strategy_name.split('_')[0] if '_' in signal.strategy_name else 'BTC'
+                # Check if it's NY open or close time
+                if ((timestamp.hour == ny_open_hour and timestamp.minute == ny_open_minute) or
+                    (timestamp.hour == ny_close_hour and timestamp.minute == ny_close_minute)):
+                    relevant_times.append(timestamp)
             
-            # Check concurrency limits
-            if len(self.active_trades) >= self.max_concurrent_trades:
-                continue
-            
-            # Check symbol-specific limits
-            if symbol in symbol_trades:
-                if symbol_trades[symbol] >= 1:  # Max 1 trade per symbol
-                    continue
-            
-            # Check minimum bar separation (simplified)
-            recent_signals = [s for s in self.signal_history[-10:] 
-                            if s.strategy_name == signal.strategy_name]
-            if len(recent_signals) > 0:
-                continue  # Skip if recent signal exists
-            
-            filtered_signals.append(signal)
-            symbol_trades[symbol] = symbol_trades.get(symbol, 0) + 1
-            self.active_trades[signal.strategy_name] = signal
-        
-        return filtered_signals
-    
-    def update_strategy_performance(self, strategy_name: str, returns: List[float]):
-        """Update strategy performance metrics"""
-        if strategy_name not in self.strategies:
-            return
-        
-        strategy = self.strategies[strategy_name]
-        strategy['returns'].extend(returns)
-        
-        if len(strategy['returns']) > 10:
-            returns_array = np.array(strategy['returns'])
-            
-            # Calculate metrics
-            mean_return = np.mean(returns_array)
-            std_return = np.std(returns_array)
-            
-            if std_return > 0:
-                strategy['sharpe'] = mean_return / std_return * np.sqrt(252)
-            
-            # Calculate max drawdown
-            cumulative = np.cumprod(1 + returns_array)
-            running_max = np.maximum.accumulate(cumulative)
-            drawdown = (cumulative - running_max) / running_max
-            strategy['max_dd'] = np.min(drawdown)
-            
-            # Calculate hit rate
-            strategy['hit_rate'] = np.mean(returns_array > 0)
-    
-    def check_health_switches(self) -> bool:
-        """Check if any kill switches should be triggered"""
-        # Check correlation surge
-        if self.correlation_matrix is not None:
-            avg_correlation = np.mean(np.abs(self.correlation_matrix))
-            if avg_correlation > self.correlation_surge_threshold:
-                logger.warning("Correlation surge detected - halving all weights")
-                for name in self.portfolio_weights:
-                    self.portfolio_weights[name] *= 0.5
-                return True
-        
-        # Check individual strategy drawdowns
-        for name, strategy in self.strategies.items():
-            if strategy['max_dd'] < -self.max_drawdown_threshold:
-                logger.warning(f"Strategy {name} hit max drawdown threshold")
-                self.portfolio_weights[name] = 0.0
-        
-        return False
+            return relevant_times
+        else:
+            # For other simple strategies, check every hour to reduce processing
+            return symbol_data.index[::60].tolist()  # Every 60 minutes
+
+# Legacy compatibility - create alias for existing code
+CryptoSignalFramework = SignalFramework

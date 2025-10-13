@@ -14,6 +14,7 @@ import pandas as pd
 import numpy as np
 import time
 import sys
+import signal
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import json
@@ -36,45 +37,15 @@ class LiveTradingMonitor:
     Real-time monitor for the live trading system
     """
     
-    def __init__(self, data_dir: str = "data", symbols: List[str] = None):
+    def __init__(self, data_dir: str = "data", symbols: List[str] = None, signal_days: int = 90):
         self.data_dir = Path(data_dir)
         self.symbols = symbols or ['BTC', 'ETH', 'ADA', 'AVAX', 'DOT', 'LINK', 'MATIC', 'SOL', 'UNI']
-        
-        # Initialize components
-        self.signal_integration = None
-        self.analysis_engine = CryptoAnalysisEngine()
+        self.signal_days = signal_days  # Configurable data window for signals
         
         # Monitoring state
         self.last_data_check = {}
         self.last_signals = {}
         self.monitoring_active = True
-        
-        # Initialize signal integration
-        self._initialize_signal_integration()
-    
-    def _initialize_signal_integration(self):
-        """Initialize signal integration for monitoring"""
-        try:
-            # Get available strategies
-            from src.crypto_trading_strategies import CryptoTradingStrategies
-            strategies = CryptoTradingStrategies()
-            available_strategies = list(strategies.strategies.keys())
-            
-            # Use all available strategies for monitoring
-            selected_strategies = available_strategies
-            logger.info(f"Monitoring all {len(selected_strategies)} strategies: {', '.join(selected_strategies)}")
-            
-            # Initialize signal integration
-            self.signal_integration = CryptoSignalIntegration(
-                data_dir=str(self.data_dir),
-                selected_strategies=selected_strategies
-            )
-            
-            logger.info("Signal integration initialized for monitoring")
-            
-        except Exception as e:
-            logger.error(f"Error initializing signal integration: {e}")
-            self.signal_integration = None
     
     def get_latest_data_summary(self) -> Dict:
         """Get summary of latest data for all symbols"""
@@ -112,40 +83,25 @@ class LiveTradingMonitor:
         return summary
     
     def get_detailed_signals(self) -> Dict:
-        """Get detailed signal analysis for all symbols"""
-        if not self.signal_integration:
-            return {'error': 'Signal integration not available'}
-        
+        """Get signals from live trading system output (not generate new ones)"""
         try:
-            # Generate signals for all symbols
-            signals = self.signal_integration.generate_signals(
-                symbols=self.symbols,
-                days=1095  # Use 3 years of data for maximum strategy effectiveness
-            )
+            # Read recent signals from live trading system
+            # This would be saved by the live trading system
+            signals_file = self.data_dir / "recent_signals.json"
             
-            # Group signals by symbol and strategy
-            signal_analysis = {}
-            
-            for symbol in self.symbols:
-                symbol_signals = [s for s in signals if s['symbol'] == symbol]
+            if signals_file.exists():
+                with open(signals_file, 'r') as f:
+                    recent_signals = json.load(f)
+                return recent_signals
+            else:
+                # Fallback: show that no signals are available
+                return {
+                    'note': 'No recent signals found. Start live trading system to generate signals.',
+                    'symbols': {symbol: {'has_signals': False, 'reason': 'Live trading not running'} for symbol in self.symbols}
+                }
                 
-                if symbol_signals:
-                    signal_analysis[symbol] = {
-                        'has_signals': True,
-                        'signals': symbol_signals,
-                        'signal_count': len(symbol_signals)
-                    }
-                else:
-                    # Analyze why no signals were generated
-                    signal_analysis[symbol] = {
-                        'has_signals': False,
-                        'reason': self._analyze_no_signals(symbol)
-                    }
-            
-            return signal_analysis
-            
         except Exception as e:
-            return {'error': f'Error generating signals: {e}'}
+            return {'error': f'Error reading signals: {e}'}
     
     def _analyze_no_signals(self, symbol: str) -> str:
         """Analyze why no signals were generated for a symbol"""
@@ -284,16 +240,20 @@ class LiveTradingMonitor:
         
         if 'error' in signal_analysis:
             print(f"❌ Error: {signal_analysis['error']}")
+        elif 'note' in signal_analysis:
+            print(f"ℹ️  {signal_analysis['note']}")
+            for symbol, analysis in signal_analysis['symbols'].items():
+                print(f"🔴 {symbol}: {analysis['reason']}")
         else:
             for symbol, analysis in signal_analysis.items():
-                if analysis['has_signals']:
+                if analysis.get('has_signals', False):
                     print(f"🟢 {symbol}: {analysis['signal_count']} signals generated")
                     for signal in analysis['signals']:
                         print(f"    📈 {signal['strategy']}: {signal['signal_type']} @ ${signal['entry_price']:.2f}")
                         print(f"        Confidence: {signal['confidence']:.2f} | Reason: {signal['reason']}")
                 else:
                     print(f"🔴 {symbol}: No signals")
-                    print(f"    Reason: {analysis['reason']}")
+                    print(f"    Reason: {analysis.get('reason', 'Unknown')}")
         print()
         
         # Portfolio Status
@@ -324,8 +284,12 @@ class LiveTradingMonitor:
         if recent_trades:
             for trade in recent_trades:
                 timestamp = trade.get('timestamp', 'Unknown')[:19]
-                print(f"🔄 {timestamp} | {trade.get('symbol', 'N/A')} | {trade.get('action', 'N/A')} @ ${trade.get('price', 0):.2f}")
-                print(f"    Strategy: {trade.get('strategy', 'N/A')} | P&L: ${trade.get('simulated_pnl', 0):.2f}")
+                action = trade.get('signal_type', 'N/A')  # Use signal_type as action
+                strategy = trade.get('strategy', 'N/A')
+                if pd.isna(strategy):  # Handle NaN values
+                    strategy = 'Unknown'
+                print(f"🔄 {timestamp} | {trade.get('symbol', 'N/A')} | {action} @ ${trade.get('price', 0):.2f}")
+                print(f"    Strategy: {strategy} | P&L: ${trade.get('simulated_pnl', 0):.2f}")
         else:
             print("No recent trades found")
         print()

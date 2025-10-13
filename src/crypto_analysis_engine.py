@@ -12,9 +12,15 @@ from pathlib import Path
 import logging
 from loguru import logger
 
-from .feature_engineering.technical_indicators import TechnicalIndicators
-from .feature_engineering.alpha_factors import AlphaFactorGenerator
-from .feature_engineering.nlp_processor import NLPProcessor
+try:
+    from .feature_engineering.technical_indicators import TechnicalIndicators
+    from .feature_engineering.alpha_factors import AlphaFactorGenerator
+    from .feature_engineering.nlp_processor import NLPProcessor
+except ImportError:
+    # Fallback for when running as script
+    from feature_engineering.technical_indicators import TechnicalIndicators
+    from feature_engineering.alpha_factors import AlphaFactorGenerator
+    from feature_engineering.nlp_processor import NLPProcessor
 
 class CryptoAnalysisEngine:
     """Unified analysis engine for all crypto assets"""

@@ -71,7 +71,7 @@ strategies:
     name: "Volatility Expansion Breakout"
     description: "Detect compression periods, wait for expansion breakout with volume, trade momentum continuation"
     enabled: true
-    weight: 0.25
+    weight: 0.15
     
     parameters:
       atr_period: 14
@@ -85,6 +85,94 @@ strategies:
       - name: "compression_breakout_long"
         weight: 1.0
         description: "Long signal on volatility expansion breakout"
+
+  daily_avwap_zscore_reversion:
+    name: "Daily AVWAP Z-Score Reversion"
+    description: "Fade intraday overextensions relative to the day's anchored VWAP when volume climax prints and price snaps back inside"
+    enabled: true
+    weight: 0.20
+    
+    parameters:
+      Z: 1.6
+      L: 90
+      vol_mult: 1.7
+      atr_n: 14
+      confidence: 0.70
+      
+    signals:
+      - name: "avwap_zscore_long"
+        weight: 0.5
+        description: "Long signal on oversold snapback to AVWAP"
+      - name: "avwap_zscore_short"
+        weight: 0.5
+        description: "Short signal on overbought snapback to AVWAP"
+
+  opening_range_break_retest:
+    name: "Opening Range Break & Retest (ORB-R)"
+    description: "Trade the retest of the UTC opening range after a clean break with confirming volume"
+    enabled: true
+    weight: 0.20
+    
+    parameters:
+      or_minutes: 30
+      delta: 0.15
+      vol_mult: 1.2
+      retest_eps: 0.05
+      atr_n: 14
+      confidence: 0.75
+      
+    signals:
+      - name: "orb_retest_long"
+        weight: 0.5
+        description: "Long signal on ORH retest after breakout"
+      - name: "orb_retest_short"
+        weight: 0.5
+        description: "Short signal on ORL retest after breakout"
+
+  keltner_exhaustion_fade:
+    name: "Keltner Exhaustion Fade"
+    description: "Fade extreme pushes beyond wide Keltner bands when volume climax prints and price closes back inside"
+    enabled: true
+    weight: 0.20
+    
+    parameters:
+      ema_n: 20
+      atr_n: 20
+      m: 2.2
+      vol_mult: 2.0
+      body_mult: 0.8
+      confidence: 0.70
+      
+    signals:
+      - name: "keltner_fade_long"
+        weight: 0.5
+        description: "Long signal on lower band exhaustion fade"
+      - name: "keltner_fade_short"
+        weight: 0.5
+        description: "Short signal on upper band exhaustion fade"
+
+  fakeout_reversion:
+    name: "Fakeout Reversion"
+    description: "Trade false breakouts from consolidation ranges by detecting compression, fakeout, and reversion patterns"
+    enabled: true
+    weight: 0.15
+    
+    parameters:
+      compression_days: 7
+      vol_z_threshold: 1.5
+      vol_reversion_threshold: 1.0
+      atr_compression_threshold: 0.3
+      range_compression_threshold: 0.02
+      similarity_threshold: 0.7
+      confidence: 0.75
+      
+    signals:
+      - name: "fakeout_reversion_long"
+        weight: 0.5
+        description: "Long signal on fakeout down + reversion up"
+      - name: "fakeout_reversion_short"
+        weight: 0.5
+        description: "Short signal on fakeout up + reversion down"
 
 # Risk Management Rules
 risk_management:
