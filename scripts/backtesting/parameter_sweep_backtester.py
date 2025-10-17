@@ -24,7 +24,7 @@ sys.path.append(str(Path(__file__).parent.parent.parent / "src"))
 
 from crypto_analysis_engine import CryptoAnalysisEngine
 from crypto_signal_integration import CryptoSignalIntegration
-from crypto_trading_strategies import CryptoTradingStrategies
+# Removed old CryptoTradingStrategies import - using new dynamic system
 from crypto_signal_framework import SignalType
 from utils.progress_logger import progress_logger, create_parameter_sweep_progress, create_signal_progress
 
@@ -54,7 +54,8 @@ class ParameterSweepBacktester:
     def __init__(self, initial_capital: float = 10000.0):
         self.initial_capital = initial_capital
         self.analysis_engine = CryptoAnalysisEngine()
-        self.strategies = CryptoTradingStrategies()
+        # Use new dynamic signal integration instead of old strategies
+        self.signal_integration = CryptoSignalIntegration()
         
         # Available symbols from data directory
         self.available_symbols = self._get_available_symbols()

@@ -50,7 +50,11 @@ class IntegratedLiveTrading:
     3. Live trade execution and logging
     """
     
-    def __init__(self, data_dir: str = "data", symbols: List[str] = None, api_keys: Dict = None):
+    def __init__(self, data_dir: str = "data", symbols: List[str] = None, api_keys: Dict = None,
+                 initial_capital: float = 100000.0, fresh_portfolio: bool = False,
+                 selected_strategies: Optional[List[str]] = None,
+                 prefill_days: int = 0,
+                 auto_fill_gaps: bool = False):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(exist_ok=True)
         self.symbols = symbols or ['BTC', 'ETH', 'ADA', 'AVAX', 'DOT', 'LINK', 'MATIC', 'SOL', 'UNI']
@@ -60,12 +64,15 @@ class IntegratedLiveTrading:
         self.ws_feed = None
         self.signal_integration = None
         self.analysis_engine = CryptoAnalysisEngine()
+        self.selected_strategies = selected_strategies
+        self.prefill_days = int(prefill_days or 0)
+        self.auto_fill_gaps = bool(auto_fill_gaps)
         
         # Trading state
         self.portfolio_state = {
             "current_positions": {},  # symbol -> position_size
-            "cash_balance": 100000.0,
-            "total_value": 100000.0,
+            "cash_balance": float(initial_capital),
+            "total_value": float(initial_capital),
             "cumulative_pnl": 0.0,
             "last_update": datetime.now().isoformat()
         }
@@ -79,9 +86,94 @@ class IntegratedLiveTrading:
         self.trades_log = self.data_dir / "live_trades.csv"
         self.portfolio_file = self.data_dir / "portfolio_state.json"
         
-        # Load existing state
-        self._load_portfolio_state()
+        # Load or reset state
+        if fresh_portfolio:
+            logger.info(f"Initializing fresh portfolio with initial capital ${initial_capital:,.2f}")
+            # Save immediately to persist the fresh state
+            self._save_portfolio_state()
+        else:
+            self._load_portfolio_state()
         self._initialize_trades_log()
+        self._ensure_trades_log_schema()
+
+    def _ensure_trades_log_schema(self):
+        """Ensure trades CSV has the expected schema; migrate if needed."""
+        try:
+            expected_cols = [
+                'timestamp', 'symbol', 'signal_type', 'price', 'confidence', 
+                'reason', 'strategy', 'simulated_pnl', 'cumulative_pnl', 
+                'position_size', 'trade_id', 'action'
+            ]
+            if self.trades_log.exists():
+                # Read header only
+                with open(self.trades_log, 'r', encoding='utf-8') as f:
+                    first_line = f.readline().strip()
+                current_cols = [c.strip() for c in first_line.split(',')] if first_line else []
+                if set(current_cols) != set(expected_cols):
+                    # Backup and reinitialize with expected schema
+                    backup_path = self.trades_log.with_name(f"{self.trades_log.stem}_legacy_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+                    self.trades_log.replace(backup_path)
+                    df = pd.DataFrame(columns=expected_cols)
+                    df.to_csv(self.trades_log, index=False)
+                    logger.info(f"Reinitialized trades log with new schema; backed up old to {backup_path}")
+        except Exception as e:
+            logger.warning(f"Could not verify/migrate trades log schema: {e}")
+
+    async def _run_prefill(self, days_back: int):
+        """Run historical prefill for specified symbols and days_back"""
+        try:
+            if days_back <= 0:
+                return
+            from src.data_ingestion.crypto_collector import CryptoDataCollector
+            collector = CryptoDataCollector()
+            await collector.collect_crypto_data(self.symbols, days_back=days_back)
+            logger.info(f"Historical prefill complete for {len(self.symbols)} symbols ({days_back} days)")
+        except Exception as e:
+            logger.error(f"Prefill error: {e}")
+
+    def _get_latest_historical_time(self, symbol: str) -> Optional[datetime]:
+        try:
+            file_path = self.data_dir / "crypto_db" / f"{symbol}_historical.parquet"
+            if not file_path.exists():
+                return None
+            df = pd.read_parquet(file_path)
+            if df.empty:
+                return None
+            idx = pd.to_datetime(df.index)
+            if idx.tz is None:
+                idx = idx.tz_localize('UTC')
+            return idx.max().to_pydatetime()
+        except Exception as e:
+            logger.warning(f"Could not read latest historical time for {symbol}: {e}")
+            return None
+
+    def _maybe_prefill(self):
+        """Optionally prefill historical gaps before starting websocket"""
+        try:
+            # Explicit prefill takes precedence
+            if self.prefill_days and self.prefill_days > 0:
+                logger.info(f"Running explicit historical prefill: {self.prefill_days} day(s)")
+                asyncio.run(self._run_prefill(self.prefill_days))
+                return
+            # Auto gap fill
+            if not self.auto_fill_gaps:
+                return
+            now_utc = datetime.now(timezone.utc)
+            stale = False
+            for s in self.symbols:
+                latest = self._get_latest_historical_time(s)
+                if latest is None:
+                    stale = True
+                    break
+                # consider stale if more than 5 minutes old
+                if (now_utc - latest.replace(tzinfo=timezone.utc)).total_seconds() > 300:
+                    stale = True
+                    break
+            if stale:
+                logger.info("Detected stale/missing recent historical data. Running 1-day prefill...")
+                asyncio.run(self._run_prefill(1))
+        except Exception as e:
+            logger.error(f"Error during prefill step: {e}")
         
     def _load_portfolio_state(self):
         """Load existing portfolio state"""
@@ -245,14 +337,17 @@ class IntegratedLiveTrading:
     def _initialize_signal_integration(self):
         """Initialize signal integration with available strategies"""
         try:
-            # Get available strategies
-            from src.crypto_trading_strategies import CryptoTradingStrategies
-            strategies = CryptoTradingStrategies()
-            available_strategies = list(strategies.strategies.keys())
-            
-            # Use all available strategies for live trading
-            selected_strategies = available_strategies
-            logger.info(f"Using all {len(selected_strategies)} strategies for live trading: {', '.join(selected_strategies)}")
+            # Resolve selected strategies: use provided list or all available
+            selected_strategies = None
+            if self.selected_strategies and len(self.selected_strategies) > 0:
+                selected_strategies = self.selected_strategies
+                logger.info(f"Using selected strategies for live trading: {', '.join(selected_strategies)}")
+            else:
+                # Discover available strategies from the dynamic signal integration
+                temp_integration = CryptoSignalIntegration(data_dir=str(self.data_dir))
+                available_strategies = list(temp_integration.framework.strategies.keys())
+                selected_strategies = available_strategies
+                logger.info(f"Using all {len(selected_strategies)} strategies for live trading: {', '.join(selected_strategies)}")
             
             # Initialize signal integration
             self.signal_integration = CryptoSignalIntegration(
@@ -273,11 +368,10 @@ class IntegratedLiveTrading:
                 logger.warning("Signal integration not initialized")
                 return
             
-            # Generate signals for all symbols
-            logger.info("Generating signals...")
-            signals = self.signal_integration.generate_signals(
-                symbols=self.symbols,
-                days=180  # Use 6 months for live trading (good balance of data vs speed)
+            # Generate live signals for all symbols (only processes latest data point)
+            logger.info("Generating live signals...")
+            signals = self.signal_integration.generate_live_signals(
+                symbols=self.symbols
             )
             
             if not signals:
@@ -298,11 +392,31 @@ class IntegratedLiveTrading:
         """Save recent signals for monitoring"""
         try:
             signals_file = self.data_dir / "recent_signals.json"
+            # Filter signals to current session window if available
+            session_start_iso = self.portfolio_state.get("session_start")
+            session_start_dt = None
+            if session_start_iso:
+                try:
+                    session_start_dt = datetime.fromisoformat(session_start_iso.replace('Z', '+00:00'))
+                except Exception:
+                    session_start_dt = None
             
             # Group signals by symbol
             signal_analysis = {}
             for symbol in self.symbols:
                 symbol_signals = [s for s in signals if s['symbol'] == symbol]
+                # Keep only signals at/after session_start if available
+                if session_start_dt:
+                    filtered = []
+                    for s in symbol_signals:
+                        ts = s.get('timestamp')
+                        try:
+                            ts_dt = datetime.fromisoformat(str(ts).replace('Z', '+00:00'))
+                        except Exception:
+                            ts_dt = None
+                        if ts_dt and ts_dt >= session_start_dt:
+                            filtered.append(s)
+                    symbol_signals = filtered
                 
                 if symbol_signals:
                     signal_analysis[symbol] = {
@@ -331,7 +445,7 @@ class IntegratedLiveTrading:
             symbol = signal['symbol']
             signal_type = signal['signal_type']
             confidence = signal['confidence']
-            price = signal['entry_price']
+            price = signal['price']
             strategy = signal['strategy']
             reason = signal['reason']
             
@@ -476,13 +590,48 @@ class IntegratedLiveTrading:
         """Background loop for signal generation"""
         while self.running:
             try:
-                time.sleep(self.signal_generation_interval)
-                if self.running:
-                    logger.info("🔄 Generating signals...")
-                    self._generate_and_execute_signals()
+                # Align to next minute boundary with a small buffer to ensure candle close is written
+                now = datetime.now(timezone.utc)
+                next_minute = (now.replace(second=0, microsecond=0) + timedelta(minutes=1))
+                sleep_seconds = (next_minute - now).total_seconds() + 1.0  # 1s buffer
+                if sleep_seconds > 0:
+                    time.sleep(sleep_seconds)
+
+                if not self.running:
+                    break
+
+                # Flush any completed minutes to disk before generating signals
+                self._flush_completed_minutes()
+
+                # Generate signals on latest completed minute
+                latest_minute = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=0)
+                logger.info(f"🔄 Generating signals on minute {latest_minute.strftime('%Y-%m-%d %H:%M UTC')}")
+                self._generate_and_execute_signals()
             except Exception as e:
                 logger.error(f"Error in signal generation loop: {e}")
                 time.sleep(30)  # Wait 30 seconds on error
+
+    def _flush_completed_minutes(self):
+        """Persist any symbol's current minute if it's from a previous minute."""
+        try:
+            current_minute = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+            for symbol, data in list(self.current_minute_data.items()):
+                minute_time = data.get('minute')
+                if minute_time and minute_time < current_minute:
+                    # Save the completed minute and reset container to current minute using last close
+                    self._save_minute_data(symbol, data)
+                    # Reset container for the current minute; we don't know open/high/low yet until ticks arrive
+                    self.current_minute_data[symbol] = {
+                        'open': data['close'],
+                        'high': data['close'],
+                        'low': data['close'],
+                        'close': data['close'],
+                        'volume': 0.0,
+                        'count': 0,
+                        'minute': current_minute
+                    }
+        except Exception as e:
+            logger.warning(f"Could not flush completed minutes: {e}")
     
     def start(self):
         """Start the integrated live trading system"""
@@ -499,7 +648,16 @@ class IntegratedLiveTrading:
         
         # Initialize WebSocket feed
         ws_symbols = [f"{s}-USD" for s in self.symbols]
+        # Optionally prefill before starting realtime stream
+        self._maybe_prefill()
         self.ws_feed = WebSocketPriceFeed(ws_symbols, self._on_price_update)
+        
+        # Record session start in portfolio state
+        try:
+            self.portfolio_state["session_start"] = datetime.now(timezone.utc).isoformat()
+            self._save_portfolio_state()
+        except Exception as e:
+            logger.warning(f"Could not record session start: {e}")
         
         # Start data collection
         self.running = True

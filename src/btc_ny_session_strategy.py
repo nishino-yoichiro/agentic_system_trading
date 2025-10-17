@@ -7,7 +7,7 @@ Demonstrates the new metadata-driven approach with constant-time complexity.
 """
 
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 import logging
 
@@ -61,25 +61,38 @@ class BTCNYSessionStrategy(BaseStrategy):
             current_time = current_row.name  # Timestamp from index
             current_price = current_row['close']
             
-            # NY market hours (9:30 AM - 4:30 PM ET)
+            # Ensure timezone is UTC
+            if current_time.tzinfo is None:
+                current_time = current_time.replace(tzinfo=timezone.utc)
+            elif current_time.tzinfo != timezone.utc:
+                current_time = current_time.astimezone(timezone.utc)
+            
+            # NY market hours in UTC (9:30 AM - 4:00 PM EST = 14:30 - 21:00 UTC)
+            # Note: This assumes EST (not EDT), adjust if needed for daylight saving
+            ny_open_hour_utc = 14  # 9:30 AM EST = 14:30 UTC
+            ny_open_minute_utc = 30
+            ny_close_hour_utc = 21  # 4:00 PM EST = 21:00 UTC  
+            ny_close_minute_utc = 0
+            
+            # Create NY session times for today
             ny_open_time = current_time.replace(
-                hour=self.ny_open_hour, 
-                minute=self.ny_open_minute, 
+                hour=ny_open_hour_utc, 
+                minute=ny_open_minute_utc, 
                 second=0, 
                 microsecond=0
             )
             ny_close_time = current_time.replace(
-                hour=self.ny_close_hour, 
-                minute=self.ny_close_minute, 
+                hour=ny_close_hour_utc, 
+                minute=ny_close_minute_utc, 
                 second=0, 
                 microsecond=0
             )
             
             # Check if we're in NY session
             if ny_open_time <= current_time <= ny_close_time:
-                # Buy signal at NY open
-                if (current_time.hour == self.ny_open_hour and 
-                    current_time.minute == self.ny_open_minute):
+                # Buy signal at NY open (exact time)
+                if (current_time.hour == ny_open_hour_utc and 
+                    current_time.minute == ny_open_minute_utc):
                     
                     return Signal(
                         signal_type=SignalType.LONG,
@@ -87,14 +100,14 @@ class BTCNYSessionStrategy(BaseStrategy):
                         entry_price=current_price,
                         stop_loss=current_price * (1 - self.stop_loss_pct),
                         take_profit=current_price * (1 + self.take_profit_pct),
-                        reason="NY session open - Buy signal",
+                        reason=f"BTC NY session buy - {current_time.hour}:{current_time.minute:02d} UTC",
                         timestamp=current_time,
                         strategy_name=self.name
                     )
                 
-                # Sell signal at NY close
-                elif (current_time.hour == self.ny_close_hour and 
-                      current_time.minute == self.ny_close_minute):
+                # Sell signal at NY close (exact time)
+                elif (current_time.hour == ny_close_hour_utc and 
+                      current_time.minute == ny_close_minute_utc):
                     
                     return Signal(
                         signal_type=SignalType.SHORT,
@@ -102,7 +115,7 @@ class BTCNYSessionStrategy(BaseStrategy):
                         entry_price=current_price,
                         stop_loss=current_price * (1 + self.stop_loss_pct),
                         take_profit=current_price * (1 - self.take_profit_pct),
-                        reason="NY session close - Sell signal",
+                        reason=f"BTC NY session sell - {current_time.hour}:{current_time.minute:02d} UTC",
                         timestamp=current_time,
                         strategy_name=self.name
                     )

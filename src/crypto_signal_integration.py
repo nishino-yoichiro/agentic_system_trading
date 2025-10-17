@@ -15,7 +15,7 @@ from typing import Dict, List, Optional
 import logging
 from pathlib import Path
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import sys
 
 # Add src to path for progress logger
@@ -24,7 +24,7 @@ from utils.progress_logger import progress_logger, create_signal_progress
 
 try:
     from . import crypto_signal_framework
-    from . import crypto_trading_strategies
+    # Removed crypto_trading_strategies - using new dynamic system
     from . import crypto_analysis_engine
     from . import crypto_signal_generator
     from . import btc_ny_session_strategy
@@ -32,7 +32,7 @@ try:
 except ImportError:
     # Fallback for when running as script
     import crypto_signal_framework
-    import crypto_trading_strategies
+    # Removed crypto_trading_strategies - using new dynamic system
     import crypto_analysis_engine
     import crypto_signal_generator
     import btc_ny_session_strategy
@@ -47,7 +47,7 @@ BaseStrategy = crypto_signal_framework.BaseStrategy
 
 # Legacy imports for compatibility
 CryptoSignalFramework = crypto_signal_framework.CryptoSignalFramework
-CryptoTradingStrategies = crypto_trading_strategies.CryptoTradingStrategies
+# Removed CryptoTradingStrategies - using new dynamic system
 CryptoAnalysisEngine = crypto_analysis_engine.CryptoAnalysisEngine
 CryptoSentimentGenerator = crypto_signal_generator.CryptoSentimentGenerator
 
@@ -62,7 +62,7 @@ class CryptoSignalIntegration:
         self.data_dir = Path(data_dir)
         # Use new professional framework
         self.framework = SignalFramework(max_lookback=100)
-        self.strategies = CryptoTradingStrategies()
+        # Removed old strategies - using new dynamic framework
         self.analysis_engine = CryptoAnalysisEngine()
         self.sentiment_generator = CryptoSentimentGenerator()
         
@@ -93,6 +93,15 @@ class CryptoSignalIntegration:
             'fakeout_reversion'
         ]
         
+        # Add test strategy for manual testing
+        try:
+            from test_every_minute_strategy import TestEveryMinuteStrategy
+            test_strategy = TestEveryMinuteStrategy()
+            self.framework.add_strategy(test_strategy)
+            logger.info(f"Added test strategy: {test_strategy.name}")
+        except Exception as e:
+            logger.warning(f"Could not add test strategy: {e}")
+        
         for strategy_name in professional_strategies:
             # Only add selected strategies if specified
             if selected_strategies and strategy_name not in selected_strategies:
@@ -108,19 +117,57 @@ class CryptoSignalIntegration:
             except Exception as e:
                 logger.error(f"Error adding strategy {strategy_name}: {e}")
     
-    def load_crypto_data(self, symbols: List[str], days: int = 1095) -> Dict[str, pd.DataFrame]:
-        """Load crypto data for signal generation (default: 3 years)"""
+    def load_crypto_data(self, symbols: List[str], days: int = 1095, include_live: bool = True) -> Dict[str, pd.DataFrame]:
+        """Load crypto data for signal generation (default: 3 years).
+        
+        Args:
+            symbols: List of symbols to load
+            days: Number of days of historical data to load
+            include_live: Whether to include live data (False for backtests)
+        """
         data = {}
         
         for symbol in symbols:
             try:
-                # Load data using existing analysis engine
-                df = self.analysis_engine.load_symbol_data(symbol, days=days)
-                if df is not None and len(df) > 50:
-                    data[symbol] = df
-                    logger.info(f"Loaded {len(df)} data points for {symbol} ({days} days)")
+                # Load historical DB
+                hist_df = self.analysis_engine.load_symbol_data(symbol, days=days)
+                if hist_df is None or len(hist_df) <= 50:
+                    logger.warning(f"Insufficient historical data for {symbol}")
+                    continue
+                # Try to load live 1m file for latest bars (only if include_live=True)
+                if include_live:
+                    live_path = self.data_dir / f"{symbol}_1m_historical.parquet"
+                    if live_path.exists():
+                        try:
+                            live_df = pd.read_parquet(live_path)
+                            live_df.index = pd.to_datetime(live_df.index)
+                            # Ensure UTC tz
+                            if live_df.index.tz is None:
+                                live_df.index = live_df.index.tz_localize('UTC')
+                            # Keep only data newer than the last historical timestamp to avoid large duplicate overlap
+                            last_hist = pd.to_datetime(hist_df.index).max()
+                            if last_hist.tz is None:
+                                last_hist = last_hist.tz_localize('UTC')
+                            live_df = live_df[live_df.index > last_hist]
+                            if not live_df.empty:
+                                merged = pd.concat([hist_df, live_df])
+                                merged = merged[~merged.index.duplicated(keep='last')]
+                                merged = merged.sort_index()
+                                data[symbol] = merged
+                                logger.info(f"Loaded {len(hist_df)} hist + {len(live_df)} live = {len(merged)} for {symbol}")
+                            else:
+                                data[symbol] = hist_df
+                                logger.info(f"Loaded {len(hist_df)} data points for {symbol} (no newer live minutes)")
+                        except Exception as e:
+                            logger.warning(f"Could not merge live minutes for {symbol}: {e}")
+                            data[symbol] = hist_df
+                    else:
+                        data[symbol] = hist_df
+                        logger.info(f"Loaded {len(hist_df)} data points for {symbol} (no live data file)")
                 else:
-                    logger.warning(f"Insufficient data for {symbol}")
+                    # Backtest mode - only use historical data
+                    data[symbol] = hist_df
+                    logger.info(f"Loaded {len(hist_df)} data points for {symbol} (backtest mode - no live data)")
             except Exception as e:
                 logger.error(f"Error loading data for {symbol}: {e}")
         
@@ -128,8 +175,25 @@ class CryptoSignalIntegration:
     
     def generate_signals(self, symbols: List[str], days: int = 1095, strategies: List[str] = None) -> List[Dict]:
         """Generate trading signals for specified symbols"""
-        # Load data
-        data = self.load_crypto_data(symbols, days)
+        # Determine optimal data window based on strategy requirements
+        if days is None:
+            # Use strategy metadata to determine optimal lookback
+            max_lookback = 0
+            for strategy_name, strategy_info in self.framework.strategies.items():
+                if strategies and strategy_name not in strategies:
+                    continue
+                strategy_lookback = strategy_info['config'].lookback
+                max_lookback = max(max_lookback, strategy_lookback)
+            
+            # Add some buffer for technical indicators and ensure minimum data
+            optimal_days = max(max_lookback + 50, 30)  # At least 30 days, plus strategy lookback + buffer
+            logger.info(f"Using strategy-optimized lookback: {optimal_days} days (max strategy lookback: {max_lookback})")
+        else:
+            optimal_days = days
+            logger.info(f"Using specified lookback: {optimal_days} days")
+        
+        # Load data (backtest mode - no live data)
+        data = self.load_crypto_data(symbols, optimal_days, include_live=False)
         
         if not data:
             logger.error("No data available for signal generation")
@@ -194,12 +258,109 @@ class CryptoSignalIntegration:
         
         return all_signals
     
+    def generate_live_signals(self, symbols: List[str], strategies: List[str] = None) -> List[Dict]:
+        """Generate signals for live trading - only processes the latest data point"""
+        # Load data with strategy-optimized lookback
+        max_lookback = 0
+        for strategy_name, strategy_info in self.framework.strategies.items():
+            if strategies and strategy_name not in strategies:
+                continue
+            if isinstance(strategy_info, dict) and 'config' in strategy_info:
+                strategy_lookback = strategy_info['config'].lookback
+            else:
+                # Handle case where strategy_info is the strategy object itself
+                metadata = getattr(strategy_info, 'metadata', None)
+                strategy_lookback = metadata.lookback if metadata else 0
+            max_lookback = max(max_lookback, strategy_lookback)
+        
+        optimal_days = max(max_lookback + 50, 30)
+        data = self.load_crypto_data(symbols, optimal_days)
+        
+        if not data:
+            logger.error("No data available for live signal generation")
+            return []
+        
+        all_signals = []
+        
+        for symbol, symbol_data in data.items():
+            logger.info(f"Generating live signals for {symbol} with {len(symbol_data)} data points")
+            
+            # Only process the latest data point for live trading
+            latest_row = symbol_data.iloc[-1]
+            latest_timestamp = symbol_data.index[-1]
+            
+            # Generate signals for each strategy
+            for strategy_name, strategy_info in self.framework.strategies.items():
+                if strategies and strategy_name not in strategies:
+                    continue
+                
+                try:
+                    if isinstance(strategy_info, dict) and 'strategy' in strategy_info:
+                        strategy = strategy_info['strategy']
+                        metadata = strategy_info['config']
+                    else:
+                        # Handle case where strategy_info is the strategy object itself
+                        strategy = strategy_info
+                        metadata = getattr(strategy, 'metadata', None)
+                    
+                    # For CONSTANT_TIME strategies, check if current time is relevant
+                    if metadata.strategy_type.name == 'CONSTANT_TIME':
+                        if strategy_name == 'btc_ny_session':
+                            # Check if current time is in NY session signal window
+                            if not self._is_in_ny_signal_window(latest_timestamp):
+                                continue
+                    
+                    # Generate signal for latest data point
+                    if metadata.strategy_type.name == 'CONSTANT_TIME':
+                        signal = strategy.generate_signal(latest_row, None)
+                    else:
+                        # For other strategies, provide recent history
+                        history = symbol_data.tail(metadata.lookback + 10)
+                        signal = strategy.generate_signal(latest_row, history)
+                    
+                    if signal and signal.confidence >= metadata.min_confidence:
+                        signal_dict = {
+                            'symbol': symbol,
+                            'strategy': strategy_name,
+                            'signal_type': signal.signal_type.name,
+                            'confidence': signal.confidence,
+                            'price': signal.entry_price,
+                            'action': 'BUY' if signal.signal_type.name == 'LONG' else 'SELL' if signal.signal_type.name == 'SHORT' else 'HOLD',
+                            'stop_loss': signal.stop_loss,
+                            'take_profit': signal.take_profit,
+                            'reason': signal.reason,
+                            'timestamp': latest_timestamp.isoformat() if hasattr(latest_timestamp, 'isoformat') else str(latest_timestamp),
+                            'risk_size': signal.risk_size
+                        }
+                        all_signals.append(signal_dict)
+                        logger.info(f"Generated live signal: {strategy_name} {signal.signal_type.name} @ ${signal.entry_price:.2f}")
+                        
+                except Exception as e:
+                    logger.error(f"Error generating live signal for {strategy_name}: {e}")
+                    continue
+        
+        logger.info(f"Generated {len(all_signals)} live signals")
+        return all_signals
+    
+    def _is_in_ny_signal_window(self, timestamp) -> bool:
+        """Check if timestamp is in NY session signal generation window"""
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        elif timestamp.tzinfo != timezone.utc:
+            timestamp = timestamp.astimezone(timezone.utc)
+        
+        # NY open: 14:30-14:35 UTC, NY close: 21:00-21:05 UTC
+        if (timestamp.hour == 14 and 30 <= timestamp.minute <= 35) or \
+           (timestamp.hour == 21 and 0 <= timestamp.minute <= 5):
+            return True
+        return False
+    
     def backtest_signals(self, symbols: List[str], days: int = 90, initial_capital: float = 100000, step: int = 10) -> Dict:
         """Backtest the signal framework"""
         logger.info(f"Starting backtest for {symbols} over {days} days")
         
-        # Load data
-        data = self.load_crypto_data(symbols, days)
+        # Load data (backtest mode - no live data)
+        data = self.load_crypto_data(symbols, days, include_live=False)
         
         if not data:
             return {'error': 'No data available for backtesting'}

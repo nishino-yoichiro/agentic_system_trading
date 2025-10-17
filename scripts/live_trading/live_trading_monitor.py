@@ -92,6 +92,27 @@ class LiveTradingMonitor:
             if signals_file.exists():
                 with open(signals_file, 'r') as f:
                     recent_signals = json.load(f)
+                # Filter by session_start if present in portfolio
+                try:
+                    portfolio_file = self.data_dir / "portfolio_state.json"
+                    if portfolio_file.exists():
+                        with open(portfolio_file, 'r') as pf:
+                            portfolio = json.load(pf)
+                        session_start = portfolio.get('session_start')
+                        if session_start:
+                            session_dt = pd.to_datetime(session_start, utc=True, errors='coerce')
+                            for symbol, analysis in list(recent_signals.items()):
+                                if analysis.get('signals'):
+                                    filtered = []
+                                    for s in analysis['signals']:
+                                        ts = pd.to_datetime(s.get('timestamp'), utc=True, errors='coerce')
+                                        if ts is not pd.NaT and ts >= session_dt:
+                                            filtered.append(s)
+                                    analysis['signals'] = filtered
+                                    analysis['signal_count'] = len(filtered)
+                                    analysis['has_signals'] = len(filtered) > 0
+                except Exception as e:
+                    logger.warning(f"Could not filter recent signals by session: {e}")
                 return recent_signals
             else:
                 # Fallback: show that no signals are available
@@ -193,13 +214,35 @@ class LiveTradingMonitor:
             if trades_file.exists():
                 # Try to read with error handling for malformed CSV
                 try:
-                    df = pd.read_csv(trades_file)
+                    df = pd.read_csv(trades_file, on_bad_lines='skip')
                 except pd.errors.ParserError as e:
                     logger.warning(f"CSV parsing error: {e}")
                     # Try to read with more flexible parsing
                     df = pd.read_csv(trades_file, on_bad_lines='skip')
                 
                 if not df.empty:
+                    # Filter by current session if available
+                    try:
+                        portfolio_file = self.data_dir / "portfolio_state.json"
+                        session_start = None
+                        if portfolio_file.exists():
+                            with open(portfolio_file, 'r') as f:
+                                portfolio = json.load(f)
+                            session_start = portfolio.get('session_start')
+                        if session_start and 'timestamp' in df.columns:
+                            # Convert timestamps to UTC for comparison
+                            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce', utc=True)
+                            session_start_dt = pd.to_datetime(session_start, utc=True)
+                            
+                            # If no trades match the session filter, show all recent trades
+                            filtered_df = df[df['timestamp'] >= session_start_dt]
+                            if not filtered_df.empty:
+                                df = filtered_df
+                            else:
+                                # Fallback: show all trades if session filtering returns nothing
+                                logger.info("No trades found for current session, showing all recent trades")
+                    except Exception as e:
+                        logger.warning(f"Could not filter trades by session: {e}")
                     # Convert to list of dicts and get recent trades
                     recent_trades = df.tail(limit).to_dict('records')
                     return recent_trades
@@ -249,7 +292,7 @@ class LiveTradingMonitor:
                 if analysis.get('has_signals', False):
                     print(f"🟢 {symbol}: {analysis['signal_count']} signals generated")
                     for signal in analysis['signals']:
-                        print(f"    📈 {signal['strategy']}: {signal['signal_type']} @ ${signal['entry_price']:.2f}")
+                        print(f"    📈 {signal['strategy']}: {signal['signal_type']} @ ${signal['price']:.2f}")
                         print(f"        Confidence: {signal['confidence']:.2f} | Reason: {signal['reason']}")
                 else:
                     print(f"🔴 {symbol}: No signals")
@@ -283,7 +326,11 @@ class LiveTradingMonitor:
         
         if recent_trades:
             for trade in recent_trades:
-                timestamp = trade.get('timestamp', 'Unknown')[:19]
+                timestamp = trade.get('timestamp', 'Unknown')
+                if hasattr(timestamp, 'strftime'):
+                    timestamp = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+                elif isinstance(timestamp, str):
+                    timestamp = timestamp[:19]
                 action = trade.get('signal_type', 'N/A')  # Use signal_type as action
                 strategy = trade.get('strategy', 'N/A')
                 if pd.isna(strategy):  # Handle NaN values

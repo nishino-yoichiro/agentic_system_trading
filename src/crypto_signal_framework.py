@@ -410,18 +410,18 @@ class SignalFramework:
     def _get_relevant_timestamps(self, symbol_data: pd.DataFrame, strategy_name: str) -> List[datetime]:
         """Get timestamps where signals might occur for simple strategies"""
         if strategy_name == 'btc_ny_session':
-            # Only check NY session open/close times
+            # Only check NY session open/close times (in UTC)
             relevant_times = []
             for timestamp in symbol_data.index:
-                # NY market hours (9:30 AM - 4:30 PM ET)
-                ny_open_hour = 9
-                ny_open_minute = 30
-                ny_close_hour = 16
-                ny_close_minute = 30
+                # NY market hours in UTC (9:30 AM - 4:00 PM EST = 14:30 - 21:00 UTC)
+                ny_open_hour_utc = 14
+                ny_open_minute_utc = 30
+                ny_close_hour_utc = 21
+                ny_close_minute_utc = 0
                 
-                # Check if it's NY open or close time
-                if ((timestamp.hour == ny_open_hour and timestamp.minute == ny_open_minute) or
-                    (timestamp.hour == ny_close_hour and timestamp.minute == ny_close_minute)):
+                # Check if it's NY open or close time (exact time)
+                if ((timestamp.hour == ny_open_hour_utc and timestamp.minute == ny_open_minute_utc) or
+                    (timestamp.hour == ny_close_hour_utc and timestamp.minute == ny_close_minute_utc)):
                     relevant_times.append(timestamp)
             
             return relevant_times

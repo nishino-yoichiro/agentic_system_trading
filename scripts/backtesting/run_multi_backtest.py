@@ -36,10 +36,10 @@ def main():
         print(f"Available: {', '.join(available_symbols)}")
         return
     
-    # Get strategy selection - dynamically load from strategies
-    from crypto_trading_strategies import CryptoTradingStrategies
-    strategies_obj = CryptoTradingStrategies()
-    available_strategies = list(strategies_obj.strategies.keys())
+    # Get strategy selection - dynamically load from new signal integration
+    from crypto_signal_integration import CryptoSignalIntegration
+    signal_integration = CryptoSignalIntegration()
+    available_strategies = list(signal_integration.framework.strategies.keys())
     
     print(f"Available strategies: {', '.join(available_strategies)}")
     strategies_input = input("Enter strategies to use (space-separated, default: all): ").strip()
