@@ -13,6 +13,7 @@ Usage:
     python main.py dashboard          # Start dashboard
     python main.py initialize-data    # Initialize historical data (legacy)
     python main.py monitor            # Start live trading monitor
+    python main.py interactive-trading # Start interactive trading with manual signal monitoring
 """
 
 import sys
@@ -170,13 +171,22 @@ class UnifiedCryptoPipeline:
         from scripts.live_trading.live_trading_monitor import LiveTradingMonitor
         monitor = LiveTradingMonitor()
         monitor.start_monitoring(refresh_interval=refresh_interval)
+    
+    def start_interactive_trading(self):
+        """Start interactive trading module"""
+        print("🎯 Starting Interactive Trading Module")
+        print("=" * 50)
+        
+        from src.interactive_trading_module import InteractiveTradingModule
+        module = InteractiveTradingModule()
+        module.start()
 
 
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description="Unified Crypto Trading Pipeline")
     parser.add_argument("command", choices=[
-        "data-collection", "live-trading", "backtest", "dashboard", "initialize-data", "monitor"
+        "data-collection", "live-trading", "backtest", "dashboard", "initialize-data", "monitor", "interactive-trading"
     ], help="Command to run")
     
     parser.add_argument("--symbols", nargs="+", 
@@ -275,6 +285,8 @@ def main():
         pipeline.initialize_data(args.symbols)
     elif args.command == "monitor":
         pipeline.start_monitor()
+    elif args.command == "interactive-trading":
+        pipeline.start_interactive_trading()
 
 if __name__ == "__main__":
     main()

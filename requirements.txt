@@ -39,3 +39,7 @@ PyYAML>=6.0
 
 # NOTE: These are excluded by default due to websockets dependency conflicts
 # The app will work without them using fallback data sources
+
+# Interactive Trading Module Dependencies
+pygame>=2.5.0  # For sound notifications
+plyer>=2.1.0   # For desktop notifications

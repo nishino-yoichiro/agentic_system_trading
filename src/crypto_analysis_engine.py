@@ -10,7 +10,8 @@ from typing import Dict, List, Optional, Tuple, Union
 from datetime import datetime, timedelta
 from pathlib import Path
 import logging
-from loguru import logger
+
+logger = logging.getLogger(__name__)
 
 try:
     from .feature_engineering.technical_indicators import TechnicalIndicators
@@ -49,7 +50,7 @@ class CryptoAnalysisEngine:
                 if df.empty:
                     raise ValueError(f"No data available for {symbol} in the last {days} days")
                 
-                logger.info(f"Loaded {len(df)} data points for {symbol} from {file_path}")
+                logger.debug(f"Loaded {len(df)} data points for {symbol} from {file_path}")
                 return df
             
             # Fallback: try to load from other sources

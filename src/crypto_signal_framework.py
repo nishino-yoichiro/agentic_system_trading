@@ -165,12 +165,15 @@ class SignalFramework:
         self.strategies[strategy.name] = strategy
         logger.info(f"Added strategy: {strategy.name} (type: {strategy.metadata.strategy_type.name})")
         
-    def generate_signals(self, data: Dict[str, pd.DataFrame], progress_bar=None, strategies: List[str] = None) -> List['Signal']:
+    def generate_signals(self, data: Dict[str, pd.DataFrame], progress_bar=None, strategies: List[str] = None, live_mode: bool = False) -> List['Signal']:
         """
         Generate signals using strategy metadata and sliding window buffers
         
         This is the core optimization - O(n) complexity instead of O(n²)
         """
+        logger.debug(f"generate_signals called with data keys: {list(data.keys())}")
+        logger.debug(f"generate_signals called with strategies: {strategies}")
+        
         all_signals = []
         
         # Initialize buffers for each symbol
@@ -182,6 +185,7 @@ class SignalFramework:
         
         # Filter strategies if specified
         strategies_to_process = strategies if strategies else list(self.strategies.keys())
+        logger.debug(f"Strategies to process: {strategies_to_process}")
         
         for name, strategy in self.strategies.items():
             # Only process requested strategies
@@ -204,12 +208,13 @@ class SignalFramework:
             
             buffer = self.buffers[symbol]
             
-            logger.info(f"Processing {name} with {metadata.strategy_type.name} access pattern")
+            # Only log processing info at debug level to reduce noise
+            logger.debug(f"Processing {name} with {metadata.strategy_type.name} access pattern")
             
             # Process data based on strategy type
-            if metadata.strategy_type == StrategyType.CONSTANT_TIME:
+            if metadata.strategy_type.name == "CONSTANT_TIME":
                 # Only process relevant timestamps for constant-time strategies
-                relevant_timestamps = self._get_relevant_timestamps(symbol_data, name)
+                relevant_timestamps = self._get_relevant_timestamps(symbol_data, name, live_mode)
                 
                 if progress_bar:
                     progress_bar.set_description(f"Processing {name} (constant-time)")
@@ -217,7 +222,13 @@ class SignalFramework:
                 
                 for timestamp in relevant_timestamps:
                     try:
-                        current_row = symbol_data.loc[timestamp]
+                        # For live mode, use the most recent data row but with current timestamp
+                        if live_mode and timestamp not in symbol_data.index:
+                            current_row = symbol_data.iloc[-1].copy()
+                            current_row.name = timestamp  # Set the timestamp for the strategy
+                        else:
+                            current_row = symbol_data.loc[timestamp]
+                        
                         buffer.add(current_row)
                         
                         # Detect regime using recent data
@@ -236,14 +247,14 @@ class SignalFramework:
                         logger.error(f"Error generating signal for {name} at {timestamp}: {e}")
                         continue
                         
-            elif metadata.strategy_type == StrategyType.FIXED_LOOKBACK:
+            elif metadata.strategy_type.name == "FIXED_LOOKBACK":
                 # Use sliding window for fixed lookback strategies
                 iteration_range = range(metadata.lookback, len(symbol_data))
                 
                 if progress_bar:
                     progress_bar.set_description(f"Processing {name} (fixed lookback: {metadata.lookback})")
                     for i in iteration_range:
-                        if i % 100 == 0:
+                        if i % 100 == 0 and progress_bar:
                             progress_bar.set_postfix({"Strategy": name, "Signals": len(all_signals)})
                             progress_bar.update(100)
                         
@@ -268,17 +279,17 @@ class SignalFramework:
                 
                 # Update progress bar for remaining iterations
                 remaining = len(iteration_range) % 100
-                if remaining > 0:
+                if remaining > 0 and progress_bar:
                     progress_bar.update(remaining)
                     
-            elif metadata.strategy_type == StrategyType.FULL_CONTEXT:
+            elif metadata.strategy_type.name == "FULL_CONTEXT":
                 # Full context strategies (legacy support)
                 iteration_range = range(50, len(symbol_data))
                 
                 if progress_bar:
                     progress_bar.set_description(f"Processing {name} (full context)")
                     for i in iteration_range:
-                        if i % 100 == 0:
+                        if i % 100 == 0 and progress_bar:
                             progress_bar.set_postfix({"Strategy": name, "Signals": len(all_signals)})
                             progress_bar.update(100)
                         
@@ -303,13 +314,18 @@ class SignalFramework:
                 
                 # Update progress bar for remaining iterations
                 remaining = len(iteration_range) % 100
-                if remaining > 0:
+                if remaining > 0 and progress_bar:
                     progress_bar.update(remaining)
         
         # Update signal history
         self.signal_history.extend(all_signals)
         
-        logger.info(f"Generated {len(all_signals)} signals using optimized framework")
+        # Debug logging for troubleshooting
+        logger.debug(f"Signal generation completed: {len(all_signals)} signals")
+        if len(all_signals) > 0:
+            logger.info(f"Generated {len(all_signals)} signals using optimized framework")
+        else:
+            logger.debug(f"Generated {len(all_signals)} signals using optimized framework")
         return all_signals
     
     def _apply_risk_management(self, signal: 'Signal', metadata: StrategyMetadata, 
@@ -407,27 +423,59 @@ class SignalFramework:
         vol_multiplier = target_vol / realized_vol
         return np.clip(vol_multiplier, 0.1, 10.0)  # Cap between 0.1x and 10x
     
-    def _get_relevant_timestamps(self, symbol_data: pd.DataFrame, strategy_name: str) -> List[datetime]:
+    def _get_relevant_timestamps(self, symbol_data: pd.DataFrame, strategy_name: str, live_mode: bool = False) -> List[datetime]:
         """Get timestamps where signals might occur for simple strategies"""
         if strategy_name == 'btc_ny_session':
-            # Only check NY session open/close times (in UTC)
-            relevant_times = []
-            for timestamp in symbol_data.index:
-                # NY market hours in UTC (9:30 AM - 4:00 PM EST = 14:30 - 21:00 UTC)
-                ny_open_hour_utc = 14
-                ny_open_minute_utc = 30
-                ny_close_hour_utc = 21
-                ny_close_minute_utc = 0
+            if live_mode:
+                # Live mode: only check if current time is NY session
+                if len(symbol_data) > 0:
+                    latest_timestamp = symbol_data.index[-1]
+                    # Check if it's NY session time
+                    ny_open_hour_utc = 14
+                    ny_open_minute_utc = 30
+                    ny_close_hour_utc = 21
+                    ny_close_minute_utc = 0
+                    
+                    if ((latest_timestamp.hour == ny_open_hour_utc and latest_timestamp.minute == ny_open_minute_utc) or
+                        (latest_timestamp.hour == ny_close_hour_utc and latest_timestamp.minute == ny_close_minute_utc)):
+                        return [latest_timestamp]
+                return []
+            else:
+                # Backtest mode: check all timestamps for NY session times
+                relevant_times = []
+                for timestamp in symbol_data.index:
+                    # NY market hours in UTC (9:30 AM - 4:00 PM EST = 14:30 - 21:00 UTC)
+                    ny_open_hour_utc = 14
+                    ny_open_minute_utc = 30
+                    ny_close_hour_utc = 21
+                    ny_close_minute_utc = 0
+                    
+                    # Check if it's NY open or close time (exact time)
+                    if ((timestamp.hour == ny_open_hour_utc and timestamp.minute == ny_open_minute_utc) or
+                        (timestamp.hour == ny_close_hour_utc and timestamp.minute == ny_close_minute_utc)):
+                        relevant_times.append(timestamp)
                 
-                # Check if it's NY open or close time (exact time)
-                if ((timestamp.hour == ny_open_hour_utc and timestamp.minute == ny_open_minute_utc) or
-                    (timestamp.hour == ny_close_hour_utc and timestamp.minute == ny_close_minute_utc)):
-                    relevant_times.append(timestamp)
-            
-            return relevant_times
+                return relevant_times
+        elif strategy_name == 'test_every_minute':
+            if live_mode:
+                # Live mode: use current time, not historical data
+                from datetime import datetime, timezone
+                current_time = datetime.now(timezone.utc)
+                current_minute = current_time.replace(second=0, microsecond=0)
+                return [current_minute]
+            else:
+                # Backtest mode: check every minute
+                return symbol_data.index.tolist()
         else:
-            # For other simple strategies, check every hour to reduce processing
-            return symbol_data.index[::60].tolist()  # Every 60 minutes
+            if live_mode:
+                # Live mode: Use current time for all strategies
+                # Let each strategy handle its own timing logic
+                from datetime import datetime, timezone
+                current_time = datetime.now(timezone.utc)
+                return [current_time]
+            else:
+                # Backtest mode: check every hour to reduce processing
+                return symbol_data.index[::60].tolist()  # Every 60 minutes
 
 # Legacy compatibility - create alias for existing code
 CryptoSignalFramework = SignalFramework

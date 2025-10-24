@@ -157,7 +157,7 @@ class CryptoSignalIntegration:
                                 logger.info(f"Loaded {len(hist_df)} hist + {len(live_df)} live = {len(merged)} for {symbol}")
                             else:
                                 data[symbol] = hist_df
-                                logger.info(f"Loaded {len(hist_df)} data points for {symbol} (no newer live minutes)")
+                                logger.debug(f"Loaded {len(hist_df)} data points for {symbol} (no newer live minutes)")
                         except Exception as e:
                             logger.warning(f"Could not merge live minutes for {symbol}: {e}")
                             data[symbol] = hist_df
@@ -283,7 +283,7 @@ class CryptoSignalIntegration:
         all_signals = []
         
         for symbol, symbol_data in data.items():
-            logger.info(f"Generating live signals for {symbol} with {len(symbol_data)} data points")
+            logger.debug(f"Generating live signals for {symbol} with {len(symbol_data)} data points")
             
             # Only process the latest data point for live trading
             latest_row = symbol_data.iloc[-1]
@@ -333,13 +333,13 @@ class CryptoSignalIntegration:
                             'risk_size': signal.risk_size
                         }
                         all_signals.append(signal_dict)
-                        logger.info(f"Generated live signal: {strategy_name} {signal.signal_type.name} @ ${signal.entry_price:.2f}")
+                        logger.debug(f"Generated live signal: {strategy_name} {signal.signal_type.name} @ ${signal.entry_price:.2f}")
                         
                 except Exception as e:
                     logger.error(f"Error generating live signal for {strategy_name}: {e}")
                     continue
         
-        logger.info(f"Generated {len(all_signals)} live signals")
+        logger.debug(f"Generated {len(all_signals)} live signals")
         return all_signals
     
     def _is_in_ny_signal_window(self, timestamp) -> bool:

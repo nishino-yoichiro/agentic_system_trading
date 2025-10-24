@@ -35,6 +35,9 @@ class TestEveryMinuteStrategy(BaseStrategy):
         )
         
         super().__init__("test_every_minute", metadata)
+        
+        # Track last signal time to ensure only one per minute
+        self.last_signal_minute = None
     
     def generate_signal(self, current_row: pd.Series, history: Optional[pd.DataFrame] = None) -> Optional[Signal]:
         """Generate a BUY signal every minute"""
@@ -42,8 +45,13 @@ class TestEveryMinuteStrategy(BaseStrategy):
             current_time = current_row.name
             current_price = current_row['close']
             
-            # Always generate a BUY signal
-            return Signal(
+            # Check if we already generated a signal this minute
+            current_minute = current_time.replace(second=0, microsecond=0)
+            if self.last_signal_minute == current_minute:
+                return None  # Already generated signal this minute
+            
+            # Generate a BUY signal
+            signal = Signal(
                 signal_type=SignalType.LONG,
                 confidence=0.9,
                 entry_price=current_price,
@@ -53,6 +61,11 @@ class TestEveryMinuteStrategy(BaseStrategy):
                 timestamp=current_time,
                 strategy_name=self.name
             )
+            
+            # Update last signal time
+            self.last_signal_minute = current_minute
+            
+            return signal
             
         except Exception as e:
             logger.error(f"Error generating test signal: {e}")
