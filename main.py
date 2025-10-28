@@ -174,7 +174,7 @@ class UnifiedCryptoPipeline:
     
     def start_interactive_trading(self):
         """Start interactive trading module"""
-        print("🎯 Starting Interactive Trading Module")
+        print("Starting Interactive Trading Module")
         print("=" * 50)
         
         from src.interactive_trading_module import InteractiveTradingModule

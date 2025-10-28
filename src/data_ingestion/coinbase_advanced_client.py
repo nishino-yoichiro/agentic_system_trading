@@ -87,10 +87,9 @@ class CoinbaseAdvancedClient:
                 logger.error(f"Invalid granularity {granularity}. Must be one of: {valid_granularities}")
                 return None
             
-            # Calculate time range - limit to 350 candles max
-            # Use UTC time and avoid current minute (may be incomplete)
-            from datetime import timezone
-            end_time = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=1)
+            # Store original parameters
+            provided_start = start_time
+            provided_end = end_time
             
             # Calculate max days based on granularity to stay under 350 candles
             max_candles = 350
@@ -106,16 +105,33 @@ class CoinbaseAdvancedClient:
                 max_days = 1  # Default to 1 day
             
             # Only calculate timestamps if not provided
-            if not start_time or not end_time:
+            if start_time is None or end_time is None:
+                # Calculate time range - limit to 350 candles max
+                # Use UTC time and avoid current minute (may be incomplete)
+                from datetime import timezone
+                end_time = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=1)
                 # Use the smaller of requested days or max days
                 actual_days = min(days, max_days)
                 start_time = end_time - timedelta(days=actual_days)
                 
                 logger.info(f"Adjusted time range to {actual_days:.1f} days to stay under {max_candles} candles limit")
-            
-            # Convert to Unix timestamps as strings (required by Coinbase Advanced Trade API)
-            start_timestamp = str(int(start_time.timestamp()))
-            end_timestamp = str(int(end_time.timestamp()))
+                
+                # Convert datetime to Unix timestamps as strings
+                start_timestamp = str(int(start_time.timestamp()))
+                end_timestamp = str(int(end_time.timestamp()))
+            else:
+                # start_time and end_time were provided - use the ORIGINAL provided values
+                if isinstance(provided_start, str) and isinstance(provided_end, str):
+                    # Already Unix timestamps as strings
+                    start_timestamp = provided_start
+                    end_timestamp = provided_end
+                elif hasattr(provided_start, 'timestamp') and hasattr(provided_end, 'timestamp'):
+                    # Datetime objects
+                    start_timestamp = str(int(provided_start.timestamp()))
+                    end_timestamp = str(int(provided_end.timestamp()))
+                else:
+                    logger.error(f"Invalid start_time/end_time types: {type(provided_start)}, {type(provided_end)}")
+                    return None
             
             # Debug: Log the actual timestamps being sent
             logger.debug(f"Start timestamp: {start_timestamp}")
@@ -141,9 +157,14 @@ class CoinbaseAdvancedClient:
                 logger.info(f"Trying get_public_candles with granularity: {granularity_str}")
                 # Use provided timestamps if available, otherwise use calculated ones
                 if start_time and end_time:
-                    # Convert provided times to Unix timestamps as strings
-                    start_unix = str(int(start_time.timestamp()))
-                    end_unix = str(int(end_time.timestamp()))
+                    # Check if already strings (Unix timestamps)
+                    if isinstance(start_time, str) and isinstance(end_time, str):
+                        start_unix = start_time
+                        end_unix = end_time
+                    else:
+                        # Convert datetime to Unix timestamps as strings
+                        start_unix = str(int(start_time.timestamp()))
+                        end_unix = str(int(end_time.timestamp()))
                     candles_response = self.client.get_public_candles(
                         product_id=ticker,
                         start=start_unix,
@@ -164,9 +185,14 @@ class CoinbaseAdvancedClient:
                 try:
                     logger.info(f"Trying get_candles with granularity: {granularity_str}")
                     if start_time and end_time:
-                        # Convert provided times to Unix timestamps as strings
-                        start_unix = str(int(start_time.timestamp()))
-                        end_unix = str(int(end_time.timestamp()))
+                        # Check if already strings (Unix timestamps)
+                        if isinstance(start_time, str) and isinstance(end_time, str):
+                            start_unix = start_time
+                            end_unix = end_time
+                        else:
+                            # Convert datetime to Unix timestamps as strings
+                            start_unix = str(int(start_time.timestamp()))
+                            end_unix = str(int(end_time.timestamp()))
                         candles_response = self.client.get_candles(
                             product_id=ticker,
                             start=start_unix,

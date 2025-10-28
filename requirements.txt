@@ -43,3 +43,11 @@ PyYAML>=6.0
 # Interactive Trading Module Dependencies
 pygame>=2.5.0  # For sound notifications
 plyer>=2.1.0   # For desktop notifications
+
+# Multi-Adapter Support (Alpaca)
+alpaca-py>=0.21.0
+pandas-market-calendars>=4.4.0
+pytz>=2024.1
+
+# Coinbase (already using coinbase-advanced-py)
+# websockets>=10.0  # For WebSocket connections

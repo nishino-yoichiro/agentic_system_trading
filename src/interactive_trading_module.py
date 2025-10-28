@@ -133,7 +133,20 @@ class DesktopNotificationSystem:
     """Handles desktop notifications for trading signals"""
     
     def __init__(self):
-        self.enabled = False  # Disable notifications to avoid Windows TclNotifier errors
+        self.enabled = NOTIFICATION_AVAILABLE  # Enable if plyer is available
+    
+    def enable(self):
+        """Enable desktop notifications"""
+        if NOTIFICATION_AVAILABLE:
+            self.enabled = True
+            logger.info("Desktop notifications enabled")
+        else:
+            logger.warning("Cannot enable desktop notifications: plyer not available")
+    
+    def disable(self):
+        """Disable desktop notifications"""
+        self.enabled = False
+        logger.info("Desktop notifications disabled")
     
     def send_signal_notification(self, signal: Signal, symbol: str):
         """Send desktop notification for signal"""
@@ -143,10 +156,10 @@ class DesktopNotificationSystem:
         try:
             # Determine notification title and message
             signal_emoji = {
-                SignalType.LONG: "🟢",
-                SignalType.SHORT: "🔴", 
-                SignalType.FLAT: "📊"
-            }.get(signal.signal_type, "📊")
+                SignalType.LONG: "[LONG]",
+                SignalType.SHORT: "[SHORT]", 
+                SignalType.FLAT: "[FLAT]"
+            }.get(signal.signal_type, "[SIGNAL]")
             
             title = f"{signal_emoji} {signal.signal_type.name.upper()} Signal - {symbol}"
             message = f"Strategy: {signal.strategy_name}\nConfidence: {signal.confidence:.2f}\nReason: {signal.reason}"
@@ -205,7 +218,7 @@ class InteractiveTradingModule:
     def setup_interactive_session(self):
         """Interactive setup for strategies, symbols, and intervals"""
         print("\n" + "="*60)
-        print("🚀 INTERACTIVE TRADING MODULE SETUP")
+        print("INTERACTIVE TRADING MODULE SETUP")
         print("="*60)
         
         # Load available strategies
@@ -217,7 +230,7 @@ class InteractiveTradingModule:
             available_strategies = []
         
         # Strategy selection
-        print(f"\n📊 Available Strategies:")
+        print(f"\nAvailable Strategies:")
         for i, strategy in enumerate(available_strategies, 1):
             print(f"  {i}. {strategy}")
         
@@ -236,7 +249,7 @@ class InteractiveTradingModule:
         
         # Symbol selection
         default_symbols = ['BTC', 'ETH', 'ADA', 'AVAX', 'DOT', 'LINK', 'MATIC', 'SOL', 'UNI']
-        print(f"\n💰 Available Symbols: {', '.join(default_symbols)}")
+        print(f"\nAvailable Symbols: {', '.join(default_symbols)}")
         symbol_input = input("Enter symbols (comma-separated) or 'all' for all: ").strip()
         
         if symbol_input.lower() == 'all' or not symbol_input:
@@ -245,7 +258,7 @@ class InteractiveTradingModule:
             self.selected_symbols = [s.strip().upper() for s in symbol_input.split(',') if s.strip()]
         
         # Signal interval selection
-        print(f"\n⏱️  Signal Generation Interval:")
+        print(f"\nSignal Generation Interval:")
         print("  1. Every 10 seconds (high frequency)")
         print("  2. Every 20 seconds")
         print("  3. Every 30 seconds")
@@ -262,7 +275,7 @@ class InteractiveTradingModule:
         self.signal_interval = interval_map.get(interval_choice, 60)
         
         # Notification preferences
-        print(f"\n🔔 Notification Settings:")
+        print(f"\nNotification Settings:")
         sound_enabled = input("Enable sound notifications? (Y/n): ").strip().lower()
         if sound_enabled in ['n', 'no']:
             self.sound_system.enabled = False
@@ -271,7 +284,7 @@ class InteractiveTradingModule:
         if desktop_enabled in ['n', 'no']:
             self.notification_system.enabled = False
         
-        print(f"\n✅ Configuration Complete!")
+        print(f"\nConfiguration Complete!")
         print(f"   Strategies: {', '.join(self.selected_strategies)}")
         print(f"   Symbols: {', '.join(self.selected_symbols)}")
         print(f"   Signal Interval: {self.signal_interval} seconds")
@@ -310,7 +323,7 @@ class InteractiveTradingModule:
                 
                 if not data_loaded:
                     logger.warning(f"No historical data found for {symbol} in any location")
-                    print(f"⚠️  WARNING: No historical data found for {symbol}")
+                    print(f"WARNING: No historical data found for {symbol}")
                     print(f"   This will prevent signal generation!")
                     print(f"   Run: python main.py data-collection --symbols {symbol}")
                     
@@ -718,7 +731,7 @@ class InteractiveTradingModule:
                     self.notification_system.send_signal_notification(mock_signal, symbol)
             
             # Log signal
-            logger.info(f"🔔 Signal: {signal_type} {symbol} | Strategy: {strategy_name} | Confidence: {confidence:.2f} | Price: ${price:.2f}")
+            logger.info(f"Signal: {signal_type} {symbol} | Strategy: {strategy_name} | Confidence: {confidence:.2f} | Price: ${price:.2f}")
             
         except Exception as e:
             logger.error(f"Error processing signal from dict: {e}")
@@ -781,7 +794,7 @@ class InteractiveTradingModule:
             total_signals = len(previous_minute_signals)
             
             if total_signals > 0:
-                logger.info(f"📊 MINUTE SUMMARY ({minute_key}): {total_signals} total signals generated")
+                logger.info(f"MINUTE SUMMARY ({minute_key}): {total_signals} total signals generated")
                 # Show breakdown by symbol
                 symbol_counts = {}
                 for signal in previous_minute_signals:
@@ -791,7 +804,7 @@ class InteractiveTradingModule:
                 for symbol, count in symbol_counts.items():
                     logger.info(f"   {symbol}: {count} signals")
             else:
-                logger.info(f"📊 MINUTE SUMMARY ({minute_key}): No signals generated")
+                logger.info(f"MINUTE SUMMARY ({minute_key}): No signals generated")
                 
         except Exception as e:
             logger.error(f"Error showing minute summary: {e}")
@@ -831,13 +844,13 @@ class InteractiveTradingModule:
             logger.error("Failed to setup interactive session")
             return
         
-        logger.info("🚀 Starting Interactive Trading Module")
+        logger.info("Starting Interactive Trading Module")
         
         # Load historical data
         self._load_historical_data()
         
         # Check if we have data for signal generation
-        print(f"📊 Historical data loaded for symbols: {list(self.historical_data.keys())}")
+        print(f"Historical data loaded for symbols: {list(self.historical_data.keys())}")
         for symbol, df in self.historical_data.items():
             print(f"   {symbol}: {len(df)} rows")
         
@@ -856,7 +869,7 @@ class InteractiveTradingModule:
         self.signal_thread = threading.Thread(target=self._signal_generation_loop, daemon=True)
         self.signal_thread.start()
         
-        logger.info("✅ Interactive Trading Module started")
+        logger.info("Interactive Trading Module started")
         logger.info("Press Ctrl+C to stop")
         
         try:
@@ -876,7 +889,7 @@ class InteractiveTradingModule:
         if self.ws_feed:
             self.ws_feed.stop()
         
-        logger.info("✅ Interactive Trading Module stopped")
+        logger.info("Interactive Trading Module stopped")
 
 def main():
     """Main entry point for interactive trading module"""
