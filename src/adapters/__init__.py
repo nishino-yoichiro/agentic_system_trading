@@ -30,10 +30,16 @@ from .alpaca_adapter import AlpacaMarketAdapter
 from .alpaca_broker import AlpacaBroker
 from .session_controller import SessionController
 from .coinbase_adapter import CoinbaseMarketAdapter
+from .schwab_adapter import SchwabMarketAdapter
+from .schwab_options_manager import OptionsDataManager
+from .schwab_l2_manager import L2DataManager
 
 __all__ = [
     'AlpacaMarketAdapter',
     'AlpacaBroker',
     'SessionController',
-    'CoinbaseMarketAdapter'
+    'CoinbaseMarketAdapter',
+    'SchwabMarketAdapter',
+    'OptionsDataManager',
+    'L2DataManager'
 ]

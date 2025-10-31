@@ -32,30 +32,35 @@ class CryptoAnalysisEngine:
         self.nlp_processor = NLPProcessor()
         
     def load_symbol_data(self, symbol: str, days: int = 30) -> pd.DataFrame:
-        """Load historical data for any symbol"""
+        """Load combined data for any symbol via market adapter.
+
+        Uses adapters to unify sources:
+        - Historical parquet (context)
+        - Recent completed live bars
+        - In-progress bar
+        """
         try:
             symbol = symbol.upper()
-            
-            # Try to load from parquet files first
-            file_path = f"data/crypto_db/{symbol}_historical.parquet"
-            if Path(file_path).exists():
-                df = pd.read_parquet(file_path)
-                df.index = pd.to_datetime(df.index)
-                
-                # Filter to last N days
-                cutoff_date = datetime.now() - timedelta(days=days)
-                cutoff_date = pd.Timestamp(cutoff_date, tz='UTC')
-                df = df[df.index >= cutoff_date]
-                
-                if df.empty:
-                    raise ValueError(f"No data available for {symbol} in the last {days} days")
-                
-                logger.debug(f"Loaded {len(df)} data points for {symbol} from {file_path}")
-                return df
-            
-            # Fallback: try to load from other sources
-            raise FileNotFoundError(f"No data file found for {symbol}")
-            
+            # Import adapter lazily to avoid circular imports in some environments
+            try:
+                from adapters import CoinbaseMarketAdapter
+            except ImportError:
+                from .adapters import CoinbaseMarketAdapter  # type: ignore
+
+            adapter = CoinbaseMarketAdapter(symbol=symbol)
+            df = adapter.get_combined_data_for_signals(days=days)
+
+            if df is None or df.empty:
+                raise ValueError(f"No data available for {symbol} in the last {days} days")
+
+            # Ensure datetime index and UTC timezone
+            if not isinstance(df.index, pd.DatetimeIndex):
+                df.index = pd.to_datetime(df.index, utc=True)
+            elif df.index.tz is None:
+                df.index = df.index.tz_localize('UTC')
+
+            logger.debug(f"Loaded {len(df)} data points for {symbol} via adapter")
+            return df
         except Exception as e:
             logger.error(f"Failed to load data for {symbol}: {e}")
             raise

@@ -42,6 +42,7 @@ try:
     from alpaca.data.live import StockDataStream
     from alpaca.data import StockHistoricalDataClient, TimeFrame
     from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.enums import DataFeed
     from alpaca.trading.client import TradingClient
     from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
     from alpaca.trading.enums import OrderSide as AlpacaOrderSide, OrderType as AlpacaOrderType, TimeInForce
@@ -141,6 +142,9 @@ class AlpacaMarketAdapter(MarketAdapter):
         self.rate_limit_delay = 0.1  # 100ms between requests
         self.last_request_time = 0
         
+        # Historical feed selection (affects time clamping)
+        self.historical_feed: str = 'sip'  # 'sip' (15-min delay on Basic) or 'iex'
+        
     async def connect(self) -> bool:
         """Initialize Alpaca clients. Streaming started in stream_data."""
         try:
@@ -152,7 +156,13 @@ class AlpacaMarketAdapter(MarketAdapter):
             # Data stream client (do not run here)
             if self.data_stream is None:
                 # Use IEX feed for free-plan real-time eligibility
-                self.data_stream = StockDataStream(self.api_key, self.secret_key, feed="iex")
+                self.data_stream = StockDataStream(self.api_key, self.secret_key, feed=DataFeed.IEX)
+                # Diagnostics: errors/disconnects
+                try:
+                    self.data_stream.on_error(lambda e: logger.error(f"Stream error: {e}"))
+                    self.data_stream.on_disconnect(lambda: logger.warning("Stream disconnected"))
+                except Exception as _e:
+                    logger.debug(f"Could not attach stream diagnostics: {_e}")
 
             # Trading client
             if not self.trading_client:
@@ -193,11 +203,11 @@ class AlpacaMarketAdapter(MarketAdapter):
             bool: True if market is open
         """
         if not self.calendar:
-            # Fallback: check time manually
-            now = datetime.now()
+            # Fallback: check using Eastern time explicitly
+            now_et = datetime.now(ZoneInfo("America/New_York"))
             market_open = time(9, 30)
             market_close = time(16, 0)
-            return market_open <= now.time() <= market_close
+            return market_open <= now_et.time() <= market_close
         
         # Use market calendar for accurate check
         now = pd.Timestamp.now(tz='US/Eastern')
@@ -258,34 +268,41 @@ class AlpacaMarketAdapter(MarketAdapter):
         Returns:
             List of (gap_start, gap_end) tuples (only for trading hours)
         """
-        gaps = []
-        
+        gaps: List[Tuple[datetime, datetime]] = []
         if df is None or df.empty:
             return [(start, end)]
-        
-        # Check for gap at the beginning
-        if df.index.min() > start:
-            gaps.append((start, df.index.min() - timedelta(minutes=1)))
-        
-        # Check for gaps in the middle
+
+        # Normalize/clamp helper
+        def clamp_range(a: datetime, b: datetime) -> Optional[Tuple[datetime, datetime]]:
+            s = max(start, a)
+            e = min(end, b)
+            return (s, e) if s < e else None
+
+        # Beginning gap
+        first_ts = df.index.min()
+        begin_gap = clamp_range(start, first_ts - timedelta(minutes=1))
+        if begin_gap:
+            gaps.append(begin_gap)
+
+        # Middle gaps
         for i in range(len(df.index) - 1):
-            gap_minutes = (df.index[i + 1] - df.index[i]).total_seconds() / 60
-            if gap_minutes > 10:  # Gap more than 10 minutes (allows for lunch time)
-                gap_start = df.index[i] + timedelta(minutes=1)
-                gap_end = df.index[i + 1] - timedelta(minutes=1)
-                gaps.append((gap_start, gap_end))
-        
-        # Check for gap at the end
-        latest_data = df.index.max()
-        minutes_behind = (end - latest_data).total_seconds() / 60
-        
-        if minutes_behind > 5:
-            gap_start = latest_data + timedelta(minutes=1)
-            gaps.append((gap_start, end))
-        
+            left = df.index[i]
+            right = df.index[i + 1]
+            gap_minutes = (right - left).total_seconds() / 60
+            if gap_minutes > 1.5:  # missing at least one minute
+                gap = clamp_range(left + timedelta(minutes=1), right - timedelta(minutes=1))
+                if gap:
+                    gaps.append(gap)
+
+        # Ending gap
+        last_ts = df.index.max()
+        end_gap = clamp_range(last_ts + timedelta(minutes=1), end)
+        if end_gap:
+            gaps.append(end_gap)
+
         return gaps
     
-    async def load_historical_data(self, days: int = 30, fill_gaps: bool = True) -> pd.DataFrame:
+    async def load_historical_data(self, days: int = 30, fill_gaps: bool = True, overwrite: bool = False) -> pd.DataFrame:
         """
         Load historical data with gap detection (market-hours aware).
         
@@ -300,8 +317,9 @@ class AlpacaMarketAdapter(MarketAdapter):
             logger.error("UnifiedStorage not initialized")
             return pd.DataFrame()
         
-        # Let Alpaca handle any data delays based on plan
-        end = datetime.now(tz=timezone.utc)
+        # Clamp end for SIP (Basic plan enforces 15-min delay)
+        now_utc = datetime.now(tz=timezone.utc)
+        end = now_utc - timedelta(minutes=15) if getattr(self, 'historical_feed', 'sip') == 'sip' else now_utc
         start = end - timedelta(days=days)
         
         logger.info(f"Loading historical data for {self.symbol} (last {days} days)")
@@ -309,34 +327,45 @@ class AlpacaMarketAdapter(MarketAdapter):
         # Check if we have existing data
         existing_df = self.storage.load_historical(self.symbol)
         
+        if overwrite:
+            logger.info(f"Overwrite enabled; fetching full window {start} -> {end}")
+            await self._fetch_and_save_data(start, end, append=False)
+            existing_df = self.storage.load_historical(self.symbol)
+            return existing_df if existing_df is not None else pd.DataFrame()
+        
         if existing_df is None or existing_df.empty:
             logger.info(f"No existing data for {self.symbol}, fetching from API...")
             if fill_gaps and self.historical_client:
-                df = await self._fetch_and_save_data(start, end)
+                await self._fetch_and_save_data(start, end, append=False)
             else:
                 return pd.DataFrame()
         else:
-            # Check for gaps (only within market hours)
-            gaps = self.find_data_gaps(existing_df, start, end)
-            
-            if gaps:
-                logger.info(f"Found {len(gaps)} gaps for {self.symbol}")
-                
-                if fill_gaps and self.historical_client:
-                    # Fetch missing data
-                    for gap_start, gap_end in gaps:
-                        logger.info(f"Filling gap: {gap_start} to {gap_end}")
-                        df = await self._fetch_and_save_data(gap_start, gap_end)
-                else:
-                    logger.warning(f"Gaps detected but fill_gaps=False")
-            
+            # Fetch only truly missing disjoint ranges against requested window
+            existing_min = existing_df.index.min()
+            existing_max = existing_df.index.max()
+
+            # Earlier missing range: [start, existing_min)
+            early_start = start
+            early_end = min(existing_min - timedelta(minutes=1), end)
+            if fill_gaps and self.historical_client and early_start < early_end:
+                logger.info(f"Filling earlier missing range: {early_start} to {early_end}")
+                await self._fetch_and_save_data(early_start, early_end, append=True)
+
+            # Later missing range: (existing_max, end]
+            late_start = max(existing_max + timedelta(minutes=1), start)
+            late_end = end
+            if fill_gaps and self.historical_client and late_start < late_end:
+                logger.info(f"Filling later missing range: {late_start} to {late_end}")
+                await self._fetch_and_save_data(late_start, late_end, append=True)
+
+            # Reload after fills
             existing_df = self.storage.load_historical(self.symbol)
             return existing_df
         
         return existing_df if 'existing_df' in locals() else pd.DataFrame()
     
-    async def _fetch_and_save_data(self, start: datetime, end: datetime) -> pd.DataFrame:
-        """Fetch data from Alpaca API and save to storage (10k limit + pagination)."""
+    async def _fetch_and_save_data(self, start: datetime, end: datetime, append: bool = True) -> pd.DataFrame:
+        """Fetch data from Alpaca API and save to storage (paged via next_page_token)."""
         try:
             if self.historical_client is None:
                 logger.error("Alpaca historical client not initialized")
@@ -345,32 +374,31 @@ class AlpacaMarketAdapter(MarketAdapter):
             # Alpaca's get_stock_bars is synchronous, so we run it in executor
             import asyncio
             loop = asyncio.get_event_loop()
-            all_frames: List[pd.DataFrame] = []
-            page_token: Optional[str] = None
             logger.info(f"Fetching {self.symbol} from {start} to {end}")
 
-            def fetch_page(token: Optional[str]):
+            # Chunked fetching independent of next_page_token (handles any timeframe)
+            frames_chunked: List[pd.DataFrame] = []
+            minutes_per_bar = 1  # TimeFrame.Minute; extend mapping if other timeframes are added
+            max_minutes = 10000 * minutes_per_bar
+            seg_start = start
+
+            def fetch_segment(seg_s: datetime, seg_e: datetime):
                 req = StockBarsRequest(
                     symbol_or_symbols=[self.symbol],
                     timeframe=TimeFrame.Minute,
-                    start=start,
-                    end=end,
+                    start=seg_s,
+                    end=seg_e,
                     limit=10000,
-                    feed='iex',
-                    page_token=token
+                    feed=DataFeed.SIP if getattr(self, 'historical_feed', 'sip') == 'sip' else DataFeed.IEX,
                 )
                 return self.historical_client.get_stock_bars(req)
 
-            while True:
-                bars = await loop.run_in_executor(None, fetch_page, page_token)
-                if bars is None:
-                    break
-
-                # Use DataFrame provided by SDK if available
-                frame = None
-                if hasattr(bars, 'df') and isinstance(bars.df, pd.DataFrame):
-                    df_page = bars.df
-                    # If multi-index by symbol exists, select this symbol
+            while seg_start < end:
+                seg_end = min(seg_start + timedelta(minutes=max_minutes - 1), end)
+                resp = await loop.run_in_executor(None, fetch_segment, seg_start, seg_end)
+                df_page = getattr(resp, 'df', None)
+                frame: Optional[pd.DataFrame] = None
+                if isinstance(df_page, pd.DataFrame) and not df_page.empty:
                     try:
                         if 'symbol' in df_page.index.names:
                             frame = df_page.xs(self.symbol, level='symbol')
@@ -379,10 +407,10 @@ class AlpacaMarketAdapter(MarketAdapter):
                     except Exception:
                         frame = df_page
                 else:
-                    # Fallback to list conversion
                     rows = []
-                    data = getattr(bars, 'data', {})
-                    for bar in data.get(self.symbol, []):
+                    data = getattr(resp, 'data', {})
+                    bars = data.get(self.symbol, []) if isinstance(data, dict) else []
+                    for bar in bars:
                         rows.append({
                             'timestamp': bar.timestamp,
                             'open': float(bar.open),
@@ -397,24 +425,99 @@ class AlpacaMarketAdapter(MarketAdapter):
                         frame.drop(columns=['timestamp'], inplace=True, errors='ignore')
 
                 if frame is not None and not frame.empty:
-                    # Ensure UTC tz
                     if frame.index.tz is None:
                         frame.index = frame.index.tz_localize('UTC')
                     else:
                         frame.index = frame.index.tz_convert('UTC')
-                    all_frames.append(frame[['open','high','low','close','volume']])
+                    frames_chunked.append(frame[['open','high','low','close','volume']])
+                    logger.info(f"Segment {seg_start} -> {seg_end}: {len(frame)} bars, total so far: {sum(len(f) for f in frames_chunked)}")
+                else:
+                    logger.info(f"Segment {seg_start} -> {seg_end}: 0 bars")
 
-                # Pagination
-                token = getattr(bars, 'next_page_token', None)
-                if not token:
+                seg_start = seg_end + timedelta(minutes=1)
+
+            if frames_chunked:
+                df = pd.concat(frames_chunked).sort_index()
+                if df.index.tz is None:
+                    df.index = df.index.tz_localize('UTC')
+                logger.info(f"Fetched {len(df)} bars for {self.symbol} via chunked fetching")
+                if self.storage:
+                    self.storage.save_historical(self.symbol, df, append=append)
+                return df
+
+            def fetch_page(token: Optional[str]):
+                req = StockBarsRequest(
+                    symbol_or_symbols=[self.symbol],
+                    timeframe=TimeFrame.Minute,
+                    start=start,
+                    end=end,
+                    limit=10000,
+                    feed=DataFeed.SIP if getattr(self, 'historical_feed', 'sip') == 'sip' else DataFeed.IEX,
+                    page_token=token
+                )
+                resp = self.historical_client.get_stock_bars(req)
+                logger.debug(f"Response type: {type(resp)}, dir: {[x for x in dir(resp) if not x.startswith('_')][:20]}")
+                if hasattr(resp, 'data'):
+                    logger.debug(f"Response.data keys: {list(resp.data.keys()) if isinstance(resp.data, dict) else type(resp.data)}")
+                return resp
+
+            frames: List[pd.DataFrame] = []
+            page_token: Optional[str] = None
+            page_num = 0
+            while True:
+                page_num += 1
+                resp = await loop.run_in_executor(None, fetch_page, page_token)
+                if resp is None:
                     break
-                page_token = token
 
-            if not all_frames:
+                # Get bars from response for this symbol
+                bars = resp[self.symbol] if self.symbol in resp else []
+                
+                df_page = getattr(resp, 'df', None)
+                frame: Optional[pd.DataFrame] = None
+                if isinstance(df_page, pd.DataFrame) and not df_page.empty:
+                    try:
+                        if 'symbol' in df_page.index.names:
+                            frame = df_page.xs(self.symbol, level='symbol')
+                        else:
+                            frame = df_page
+                    except Exception:
+                        frame = df_page
+                else:
+                    rows = []
+                    for bar in bars:
+                        rows.append({
+                            'timestamp': bar.timestamp,
+                            'open': float(bar.open),
+                            'high': float(bar.high),
+                            'low': float(bar.low),
+                            'close': float(bar.close),
+                            'volume': float(bar.volume)
+                        })
+                    frame = pd.DataFrame(rows)
+                    if not frame.empty:
+                        frame.index = pd.to_datetime(frame['timestamp'])
+                        frame.drop(columns=['timestamp'], inplace=True, errors='ignore')
+
+                if frame is not None and not frame.empty:
+                    if frame.index.tz is None:
+                        frame.index = frame.index.tz_localize('UTC')
+                    else:
+                        frame.index = frame.index.tz_convert('UTC')
+                    frames.append(frame[['open','high','low','close','volume']])
+                    logger.info(f"Page {page_num}: {len(frame)} bars, total so far: {sum(len(f) for f in frames)}")
+
+                page_token = getattr(resp, 'next_page_token', None)
+                logger.info(f"Page {page_num} complete: bars={len(frame) if frame is not None and not frame.empty else 0}, token={page_token[:20] if page_token else None}, has_token={bool(page_token)}")
+                if not page_token:
+                    logger.info(f"Pagination complete: {page_num} pages, {sum(len(f) for f in frames)} total bars")
+                    break
+
+            if not frames:
                 logger.warning(f"No data fetched for {self.symbol}")
                 return pd.DataFrame()
 
-            df = pd.concat(all_frames).sort_index()
+            df = pd.concat(frames).sort_index()
             
             # Ensure timezone-aware
             if df.index.tz is None:
@@ -424,7 +527,7 @@ class AlpacaMarketAdapter(MarketAdapter):
             
             # Save to storage
             if self.storage:
-                self.storage.save_historical(self.symbol, df, append=True)
+                self.storage.save_historical(self.symbol, df, append=append)
             
             return df
             
@@ -450,12 +553,11 @@ class AlpacaMarketAdapter(MarketAdapter):
         if not self.is_connected:
             await self.connect()
 
-        # Register handler via decorator API and run stream in background
-        @self.data_stream.on_trades(self.symbol)
+        # Register handlers via explicit subscriptions (SDK version without decorators)
         async def _on_trade(trade):
             """Handle incoming trade data"""
             try:
-                logger.debug(f"on_trade: {trade}")
+                logger.info(f"on_trade trade received at {trade.timestamp}")
                 # Check if trade is during market hours
                 trade_time = trade.timestamp
                 
@@ -510,9 +612,76 @@ class AlpacaMarketAdapter(MarketAdapter):
             except Exception as e:
                 logger.error(f"Error handling trade: {e}")
 
+        async def _on_bar(bar):
+            """Handle completed 1-minute bar events (IEX bars)."""
+            try:
+                ts = bar.timestamp.replace(second=0, microsecond=0)
+                ohlcv = {
+                    'timestamp': ts,
+                    'open': float(bar.open),
+                    'high': float(bar.high),
+                    'low': float(bar.low),
+                    'close': float(bar.close),
+                    'volume': float(bar.volume),
+                }
+                bar_obj = OHLCVBar(
+                    timestamp=ts,
+                    symbol=self.symbol,
+                    open=ohlcv['open'],
+                    high=ohlcv['high'],
+                    low=ohlcv['low'],
+                    close=ohlcv['close'],
+                    volume=ohlcv['volume'],
+                    source='alpaca'
+                )
+                if self.validate_bar(bar_obj):
+                    bar_df = pd.DataFrame([bar_obj.to_dict()], index=[bar_obj.timestamp])
+                    if self.storage:
+                        self.storage.save_live_bar(self.symbol, bar_df)
+                    await self._bar_queue.put(bar_obj)
+                # Baseline for in-progress if trades sparse
+                self._current_in_progress_bar = ohlcv
+            except Exception as e:
+                logger.error(f"Error handling bar: {e}")
+
+        # Subscribe before starting the stream (SDK variants)
+        try:
+            # Newer SDK: set_handlers + subscribe_* with symbol lists
+            if hasattr(self.data_stream, 'set_handlers'):
+                try:
+                    self.data_stream.set_handlers(bars=_on_bar, trades=_on_trade)
+                    logger.info("Handlers set via set_handlers")
+                except Exception as e:
+                    logger.debug(f"set_handlers failed: {e}")
+            # Subscribe symbols (list-based)
+            if hasattr(self.data_stream, 'subscribe_bars'):
+                try:
+                    self.data_stream.subscribe_bars([self.symbol])
+                    logger.info(f"Subscribed bars for {self.symbol}")
+                except Exception as e:
+                    logger.debug(f"subscribe_bars failed: {e}")
+            if hasattr(self.data_stream, 'subscribe_trades'):
+                try:
+                    self.data_stream.subscribe_trades([self.symbol])
+                    logger.info(f"Subscribed trades for {self.symbol}")
+                except Exception as e:
+                    logger.debug(f"subscribe_trades failed: {e}")
+            # Older SDK variant: function-based subscribe
+            if hasattr(self.data_stream, 'subscribe'):
+                try:
+                    self.data_stream.subscribe(trades=[self.symbol], bars=[self.symbol])
+                    logger.info(f"Subscribed via generic subscribe() for {self.symbol}")
+                except Exception as e:
+                    logger.debug(f"generic subscribe() failed: {e}")
+        except Exception as e:
+            logger.error(f"Error subscribing to IEX stream: {e}")
+
         # Start the stream in background (non-blocking)
         if getattr(self, "_stream_task", None) is None or self._stream_task.done():
+            logger.info("Starting Alpaca WebSocket stream (IEX)...")
             self._stream_task = asyncio.create_task(self.data_stream.run())
+            await asyncio.sleep(1)
+            logger.info(f"Stream task started? {not self._stream_task.done()}")
         
         try:
             while self.is_connected:

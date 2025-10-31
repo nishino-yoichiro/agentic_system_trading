@@ -401,7 +401,7 @@ class CoinbaseMarketAdapter(MarketAdapter):
         
         return gaps
     
-    async def load_historical_data(self, days: int = 30, fill_gaps: bool = True) -> pd.DataFrame:
+    async def load_historical_data(self, days: int = 30, fill_gaps: bool = True, overwrite: bool = False) -> pd.DataFrame:
         """
         Load historical data with gap detection and incremental fetching.
         
@@ -424,6 +424,11 @@ class CoinbaseMarketAdapter(MarketAdapter):
         logger.info(f"Loading historical data for {self.symbol} (last {days} days)")
         
         # Check if we have existing data
+        if overwrite:
+            logger.info(f"Overwrite enabled; fetching full window {start} -> {end}")
+            df = await self._fetch_and_save_data(start, end)
+            return self.storage.load_historical(self.symbol) or pd.DataFrame()
+        
         existing_df = self.storage.load_historical(self.symbol)
         
         if existing_df is None or existing_df.empty:

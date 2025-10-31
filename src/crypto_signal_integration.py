@@ -129,45 +129,14 @@ class CryptoSignalIntegration:
         
         for symbol in symbols:
             try:
-                # Load historical DB
+                # Load combined data via adapter (historical + recent + in-progress)
                 hist_df = self.analysis_engine.load_symbol_data(symbol, days=days)
                 if hist_df is None or len(hist_df) <= 50:
                     logger.warning(f"Insufficient historical data for {symbol}")
                     continue
-                # Try to load live 1m file for latest bars (only if include_live=True)
-                if include_live:
-                    live_path = self.data_dir / f"{symbol}_1m_historical.parquet"
-                    if live_path.exists():
-                        try:
-                            live_df = pd.read_parquet(live_path)
-                            live_df.index = pd.to_datetime(live_df.index)
-                            # Ensure UTC tz
-                            if live_df.index.tz is None:
-                                live_df.index = live_df.index.tz_localize('UTC')
-                            # Keep only data newer than the last historical timestamp to avoid large duplicate overlap
-                            last_hist = pd.to_datetime(hist_df.index).max()
-                            if last_hist.tz is None:
-                                last_hist = last_hist.tz_localize('UTC')
-                            live_df = live_df[live_df.index > last_hist]
-                            if not live_df.empty:
-                                merged = pd.concat([hist_df, live_df])
-                                merged = merged[~merged.index.duplicated(keep='last')]
-                                merged = merged.sort_index()
-                                data[symbol] = merged
-                                logger.info(f"Loaded {len(hist_df)} hist + {len(live_df)} live = {len(merged)} for {symbol}")
-                            else:
-                                data[symbol] = hist_df
-                                logger.debug(f"Loaded {len(hist_df)} data points for {symbol} (no newer live minutes)")
-                        except Exception as e:
-                            logger.warning(f"Could not merge live minutes for {symbol}: {e}")
-                            data[symbol] = hist_df
-                    else:
-                        data[symbol] = hist_df
-                        logger.info(f"Loaded {len(hist_df)} data points for {symbol} (no live data file)")
-                else:
-                    # Backtest mode - only use historical data
-                    data[symbol] = hist_df
-                    logger.info(f"Loaded {len(hist_df)} data points for {symbol} (backtest mode - no live data)")
+                # Use adapter-provided data directly for both live and backtest contexts
+                data[symbol] = hist_df
+                logger.info(f"Loaded {len(hist_df)} data points for {symbol} via adapter")
             except Exception as e:
                 logger.error(f"Error loading data for {symbol}: {e}")
         

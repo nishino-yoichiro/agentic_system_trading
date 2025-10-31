@@ -103,3 +103,4 @@ class SignalEngine:
             history = [s for s in history if s.get('symbol') == symbol]
         
         return history[-limit:]
+

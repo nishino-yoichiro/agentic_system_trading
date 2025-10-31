@@ -324,3 +324,4 @@ This architecture gives you:
 - ✅ **Session awareness** - Automatic handling of market hours for equities
 - ✅ **Risk isolation** - Market-specific issues stay in adapters
 - ✅ **Future-proof** - Easy to add new exchanges (Binance, IBKR, etc.)
+

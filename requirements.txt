@@ -49,5 +49,8 @@ alpaca-py>=0.21.0
 pandas-market-calendars>=4.4.0
 pytz>=2024.1
 
+# Schwab API Support
+git+https://github.com/tylerebowers/Schwabdev.git
+websockets>=10.0  # For WebSocket connections (also used by Coinbase)
+
 # Coinbase (already using coinbase-advanced-py)
-# websockets>=10.0  # For WebSocket connections

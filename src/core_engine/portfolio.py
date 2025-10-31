@@ -182,3 +182,4 @@ class Portfolio:
             'num_positions': len(self.positions),
             'num_trades': len(self.trade_history)
         }
+

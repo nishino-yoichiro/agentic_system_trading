@@ -35,7 +35,6 @@ from collections import defaultdict, deque
 # Add project root to path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from src.data_ingestion.websocket_price_feed import WebSocketPriceFeed
 from src.crypto_signal_integration import CryptoSignalIntegration
 from src.crypto_analysis_engine import CryptoAnalysisEngine
 from src.crypto_signal_framework import Signal, SignalType
@@ -294,41 +293,19 @@ class InteractiveTradingModule:
         return True
     
     def _load_historical_data(self):
-        """Load historical data for selected symbols and check for gaps"""
-        logger.info("Loading historical data and checking for gaps...")
-        
+        """Load initial data via adapters for selected symbols."""
+        logger.info("Loading data via adapters...")
         for symbol in self.selected_symbols:
             try:
-                # Try to load data from multiple possible locations
-                data_files = [
-                    self.data_dir / f"{symbol}_1m_historical.parquet",
-                    self.data_dir / "crypto_db" / f"{symbol}_historical.parquet"
-                ]
-                
-                data_loaded = False
-                for data_file in data_files:
-                    if data_file.exists():
-                        df = pd.read_parquet(data_file)
-                        if not df.empty:
-                            # Ensure timestamp is properly handled
-                            df = self._ensure_timestamp_column(df)
-                            
-                            self.historical_data[symbol] = df
-                            logger.info(f"Loaded {len(df)} historical records for {symbol} from {data_file}")
-                            
-                            # Check for data gaps
-                            self._check_data_gaps(symbol, df)
-                            data_loaded = True
-                            break
-                
-                if not data_loaded:
-                    logger.warning(f"No historical data found for {symbol} in any location")
-                    print(f"WARNING: No historical data found for {symbol}")
-                    print(f"   This will prevent signal generation!")
-                    print(f"   Run: python main.py data-collection --symbols {symbol}")
-                    
+                df = CryptoAnalysisEngine().load_symbol_data(symbol, days=30)
+                if df is not None and not df.empty:
+                    df = self._ensure_timestamp_column(df)
+                    self.historical_data[symbol] = df
+                    logger.info(f"Loaded {len(df)} records for {symbol} via adapter")
+                else:
+                    logger.warning(f"No data available for {symbol} via adapter")
             except Exception as e:
-                logger.error(f"Failed to load historical data for {symbol}: {e}")
+                logger.error(f"Failed to load data for {symbol} via adapter: {e}")
     
     def _check_data_gaps(self, symbol: str, df: pd.DataFrame):
         """Check for data gaps and fill them if needed"""
@@ -370,52 +347,20 @@ class InteractiveTradingModule:
             logger.error(f"Error checking data gaps for {symbol}: {e}")
     
     def _fill_data_gaps(self, symbol: str):
-        """Fill data gaps for a symbol"""
-        try:
-            logger.info(f"Filling data gaps for {symbol}...")
-            
-            # Import the data collector
-            from src.data_ingestion.crypto_collector import CryptoDataCollector
-            
-            # CryptoDataCollector doesn't accept data_dir parameter
-            collector = CryptoDataCollector()
-            
-            # Collect recent data (last 1 day) - this is async, so we need to run it
-            import asyncio
-            result = asyncio.run(collector.collect_crypto_data([symbol], days_back=1))
-            
-            if result and symbol in result:
-                logger.info(f"Successfully filled gaps for {symbol}")
-                # Reload the data
-                self._reload_symbol_data(symbol)
-            else:
-                logger.warning(f"Failed to fill gaps for {symbol}")
-                
-        except Exception as e:
-            logger.error(f"Error filling data gaps for {symbol}: {e}")
+        """Deprecated: gap filling handled by adapters/storage."""
+        logger.info(f"Gap filling is deprecated. Adapters manage incremental updates.")
+        return
     
     def _reload_symbol_data(self, symbol: str):
-        """Reload data for a specific symbol after gap filling"""
+        """Reload data via adapter."""
         try:
-            # Check both possible data locations
-            data_files = [
-                self.data_dir / f"{symbol}_1m_historical.parquet",
-                self.data_dir / "crypto_db" / f"{symbol}_historical.parquet"
-            ]
-            
-            for data_file in data_files:
-                if data_file.exists():
-                    df = pd.read_parquet(data_file)
-                    if not df.empty:
-                        # Ensure timestamp is properly handled
-                        df = self._ensure_timestamp_column(df)
-                        
-                        self.historical_data[symbol] = df
-                        logger.info(f"Reloaded {len(df)} records for {symbol} from {data_file}")
-                        return
-            
-            logger.warning(f"No updated data found for {symbol} after gap filling")
-            
+            df = CryptoAnalysisEngine().load_symbol_data(symbol, days=30)
+            if df is not None and not df.empty:
+                df = self._ensure_timestamp_column(df)
+                self.historical_data[symbol] = df
+                logger.info(f"Reloaded {len(df)} records for {symbol} via adapter")
+            else:
+                logger.warning(f"No updated data found for {symbol} via adapter")
         except Exception as e:
             logger.error(f"Error reloading data for {symbol}: {e}")
     
@@ -737,51 +682,13 @@ class InteractiveTradingModule:
             logger.error(f"Error processing signal from dict: {e}")
     
     def _get_integrated_data(self, symbol: str) -> Optional[pd.DataFrame]:
-        """Get integrated data combining historical data with current WebSocket candle"""
+        """Get combined data via adapter (historical + recent + in-progress)."""
         try:
-            # Load historical data
-            hist_data = self.signal_integration.analysis_engine.load_symbol_data(symbol, days=30)
-            if hist_data is None or hist_data.empty:
+            df = self.signal_integration.analysis_engine.load_symbol_data(symbol, days=30)
+            if df is None or df.empty:
                 return None
-            
-            # Ensure timestamp column exists
-            hist_data = self._ensure_timestamp_column(hist_data)
-            
-            # Add current WebSocket candle if available
-            current_time = datetime.now(timezone.utc)
-            minute_key = current_time.strftime('%Y-%m-%d %H:%M')
-            
-            if (self.current_minute_data is not None and 
-                symbol in self.current_minute_data and 
-                minute_key in self.current_minute_data[symbol]):
-                
-                # Get current WebSocket candle
-                ws_candle = self.current_minute_data[symbol][minute_key]
-                
-                # Create DataFrame row for current candle
-                current_row = pd.DataFrame([{
-                    'timestamp': ws_candle['timestamp'],
-                    'open': ws_candle['open'],
-                    'high': ws_candle['high'],
-                    'low': ws_candle['low'],
-                    'close': ws_candle['close'],
-                    'volume': ws_candle['volume']
-                }])
-                
-                # Append to historical data
-                integrated_data = pd.concat([hist_data, current_row], ignore_index=True)
-                integrated_data = integrated_data.sort_values('timestamp').reset_index(drop=True)
-                
-                # Set timestamp as index for signal framework
-                integrated_data = integrated_data.set_index('timestamp')
-                
-                logger.debug(f"Integrated data for {symbol}: {len(hist_data)} hist + 1 live = {len(integrated_data)} total")
-                return integrated_data
-            
-            # If no WebSocket data, return historical data with timestamp as index
-            hist_data = hist_data.set_index('timestamp')
-            return hist_data
-            
+            df = self._ensure_timestamp_column(df)
+            return df.set_index('timestamp')
         except Exception as e:
             logger.error(f"Error getting integrated data for {symbol}: {e}")
             return None
@@ -857,13 +764,8 @@ class InteractiveTradingModule:
         # Initialize signal integration
         self._initialize_signal_integration()
         
-        # Initialize WebSocket feed
-        ws_symbols = [f"{s}-USD" for s in self.selected_symbols]
-        self.ws_feed = WebSocketPriceFeed(ws_symbols, self._on_price_update)
-        
-        # Start data collection
+        # Start data collection (adapter-driven; no direct websockets)
         self.running = True
-        self.ws_feed.start()
         
         # Start signal generation in background
         self.signal_thread = threading.Thread(target=self._signal_generation_loop, daemon=True)
@@ -886,8 +788,7 @@ class InteractiveTradingModule:
         """Stop the interactive trading module"""
         self.running = False
         
-        if self.ws_feed:
-            self.ws_feed.stop()
+        # No direct websocket to stop; adapters manage lifecycle elsewhere
         
         logger.info("Interactive Trading Module stopped")
 

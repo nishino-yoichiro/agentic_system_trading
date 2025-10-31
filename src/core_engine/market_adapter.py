@@ -265,3 +265,4 @@ class MarketAdapter(ABC):
             return False
         
         return True
+

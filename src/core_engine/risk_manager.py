@@ -113,3 +113,4 @@ class RiskManager:
             'positions': len(self.positions),
             'limits': self.risk_limits
         }
+

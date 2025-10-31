@@ -42,33 +42,11 @@ class UnifiedCryptoPipeline:
         
     def start_data_collection(self, symbols: list = None, days: int = 7):
         """Start historical data collection with gap filling and incremental saving"""
-        print("📡 Starting Historical Data Collection")
+        print("📡 Historical Data Collection (DEPRECATED)")
         print("=" * 50)
-        print("This collects historical data with gap filling and saves incrementally.")
-        print("If you Ctrl+C, progress is saved after each gap.")
-        print("=" * 50)
-        
-        symbols = symbols or ['BTC', 'ETH', 'ADA', 'AVAX', 'DOT', 'LINK', 'MATIC', 'SOL', 'UNI']
-        
-        # Use the original crypto collector for historical data with gap filling
-        import asyncio
-        from src.data_ingestion.crypto_collector import CryptoDataCollector
-        
-        async def collect_data():
-            collector = CryptoDataCollector()
-            # This will fill gaps incrementally and save incrementally
-            results = await collector.collect_crypto_data(symbols, days_back=days)
-            
-            print("\n📊 Collection Results:")
-            print("=" * 30)
-            for symbol in symbols:
-                if symbol in results:
-                    df = results[symbol]
-                    print(f"✅ {symbol}: {len(df)} data points")
-                else:
-                    print(f"❌ {symbol}: No data collected")
-        
-        asyncio.run(collect_data())
+        print("Legacy collectors are deprecated. Use adapters to populate storage.")
+        print("See MIGRATION_PLAN.md for details.")
+        return
     
     def start_live_trading(self, strategies: list = None, symbols: list = None,
                            fresh_portfolio: bool = False, initial_capital: float = 100000.0,

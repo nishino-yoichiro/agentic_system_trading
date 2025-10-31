@@ -8,3 +8,4 @@ reports/
 portfolio_reports/
 backtests/
 test_venv/
+*.ipynb
